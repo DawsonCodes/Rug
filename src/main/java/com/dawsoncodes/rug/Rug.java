@@ -22,6 +22,7 @@ import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerAttemptPickupItemEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
@@ -54,13 +55,17 @@ import java.util.Set;
 import java.util.UUID;
 
 public final class Rug extends JavaPlugin implements CommandExecutor, TabCompleter, Listener {
-    private static final String VERSION = "0.2.10-nms-alpha11";
+    private static final String VERSION = "0.2.11-nms-alpha12";
     private static final String COPYRIGHT = "\u00A9 2026 DawsonCodes";
     private static final char COLOR = '\u00A7';
     private static final String DISPLAY_NAME = COLOR + "6Rug Engine";
     private static final String PREFIX = COLOR + "8[" + DISPLAY_NAME + COLOR + "8] " + COLOR + "7";
     private static final String GUI_TITLE = COLOR + "6Rug Control";
     private static final String GUI_RULES_TITLE = COLOR + "6Rug Rules";
+    private static final String GUI_PLAYERS_TITLE = COLOR + "6Rug Fake Players";
+    private static final String GUI_DETAIL_TITLE = COLOR + "6Rug Bot Details";
+    private static final String GUI_CLEANUP_TITLE = COLOR + "6Rug Cleanup";
+    private static final String GUI_SKIN_TITLE = COLOR + "6Rug Skin Tools";
     private static final long SKIN_CACHE_OK_MS = 60L * 60L * 1000L;
     private static final long SKIN_CACHE_FAIL_MS = 10L * 60L * 1000L;
 
@@ -71,17 +76,45 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
     private static final String SKIN_TAG_PREFIX = "rug_skin_";
     private static final String NMS_TAG = "rug_nms_player";
 
+    // All player sub-actions Rug will parse and run. Aliases stay valid so old
+    // muscle memory keeps working, but they are not all advertised in tab
+    // completion (see PLAYER_ACTION_SUGGEST for the clean suggestion list).
     private static final List<String> PLAYER_ACTIONS = Arrays.asList(
-            "spawn", "remove", "kill", "tp", "tphere", "move", "move_here", "resync", "look", "stop", "status", "skin", "hand", "equip", "refresh"
+            "spawn", "remove", "kill", "tp", "tphere", "move", "move_here", "resync", "look", "stop", "status", "skin", "hand", "equip", "refresh", "inventory", "inv"
     );
-    private static final List<String> PLAYER_ROOT_ACTIONS = Arrays.asList("help", "list", "removeall", "killall", "purge");
-    private static final List<String> RUG_ACTIONS = Arrays.asList(
-            "help", "about", "version", "reload", "rules", "rule", "debug", "player", "fakeplayer", "fp", "bot", "spawn", "list", "removeall", "purge", "skincheck", "menu", "gui"
+    // Clean, de-duplicated suggestions only. No deprecated/hidden aliases.
+    private static final List<String> RUG_SUGGEST = Arrays.asList(
+            "player", "players", "rules", "rule", "gui", "skincheck", "purge", "help", "about"
+    );
+    private static final List<String> PLAYER_ACTION_SUGGEST = Arrays.asList(
+            "spawn", "kill", "remove", "hand", "status", "inventory", "skin"
     );
     private static final List<String> RULES = Arrays.asList(
-            "playerVisualEnabled", "playerHeadEnabled", "hitboxEnabled", "hitboxInvisible", "hitboxFireProof",
-            "playerBackend", "broadcastDeaths", "sendQuitMessage", "summonAlertSound", "deathAlertSound", "allowDuplicateOnlineNames", "skinLayers", "punchKnockback"
+            "playerBackend", "verboseMessages", "skinLayers", "punchKnockback", "allowDuplicateOnlineNames",
+            "broadcastDeaths", "sendQuitMessage", "deathAlertSound", "summonAlertSound",
+            "playerVisualEnabled", "playerHeadEnabled", "hitboxEnabled", "hitboxInvisible", "hitboxFireProof"
     );
+    // Short, human-readable descriptions shown by /rug rules.
+    private static final Map<String, String> RULE_DESCRIPTIONS = buildRuleDescriptions();
+
+    private static Map<String, String> buildRuleDescriptions() {
+        Map<String, String> map = new LinkedHashMap<String, String>();
+        map.put("playerBackend", "auto / nms / visual fake-player backend");
+        map.put("verboseMessages", "extra spawn/backend detail in chat + console");
+        map.put("skinLayers", "all / none / comma list (cape,jacket,sleeves,pants,hat)");
+        map.put("punchKnockback", "how far a punched fake player slides (0 = off)");
+        map.put("allowDuplicateOnlineNames", "allow risky duplicate names of real players");
+        map.put("broadcastDeaths", "broadcast a fake-player death line");
+        map.put("sendQuitMessage", "broadcast a fake-player leave line after death/removal");
+        map.put("deathAlertSound", "sound on fake death: none/wither/guardian/dragon/hurt");
+        map.put("summonAlertSound", "sound on visual-backend spawn (none by default)");
+        map.put("playerVisualEnabled", "visual backend spawns a player-look armor stand");
+        map.put("playerHeadEnabled", "visual backend uses a player head for the skin");
+        map.put("hitboxEnabled", "visual backend spawns a hittable hidden hitbox");
+        map.put("hitboxInvisible", "keep the visual-backend hitbox invisible");
+        map.put("hitboxFireProof", "stop the visual-backend hitbox burning in daylight");
+        return map;
+    }
     // Generic, neutral default fake-player names only. No real or personal names.
     private static final String DEFAULT_NAME = "RugBot";
     private static final List<String> DEFAULT_NAME_SUGGESTIONS = Arrays.asList(
@@ -93,6 +126,21 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
     private final Map<String, SkinResult> skinCache = new LinkedHashMap<>();
     private final Map<String, Long> skinCacheTime = new LinkedHashMap<>();
     private final Set<String> learnedNames = new LinkedHashSet<>();
+    // GUI context: which fake player a viewer's detail page is bound to, and
+    // which fake player's live inventory a viewer currently has open.
+    private final Map<UUID, String> guiBotName = new LinkedHashMap<>();
+    private final Map<UUID, String> invEditing = new LinkedHashMap<>();
+
+    /** Verbose/debug chat + console output. Off by default for clean spawns. */
+    private boolean verbose() {
+        return ruleBool("verboseMessages", false);
+    }
+
+    private void sendVerbose(CommandSender sender, String message) {
+        if (sender != null && verbose()) {
+            sender.sendMessage(message);
+        }
+    }
 
     private String trackKey(String rawName) {
         return sanitizeName(rawName).toLowerCase(Locale.ROOT);
@@ -258,6 +306,10 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
             return true;
         }
 
+        if (is(args[0], "players")) {
+            return handlePlayer(sender, new String[]{"list"});
+        }
+
         if (isPlayerNamespace(args[0])) {
             return handlePlayer(sender, tail(args));
         }
@@ -286,14 +338,15 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
     }
 
     private void showMainHelp(CommandSender sender) {
-        sender.sendMessage(COLOR + "6Rug Engine " + COLOR + "8- " + COLOR + "7main hub");
-        sender.sendMessage(COLOR + "e/rug " + COLOR + "8- " + COLOR + "7open rules GUI");
-        sender.sendMessage(COLOR + "e/rug player help " + COLOR + "8- " + COLOR + "7fake-player commands");
-        sender.sendMessage(COLOR + "e/rug rules " + COLOR + "8- " + COLOR + "7view rules");
-        sender.sendMessage(COLOR + "e/rug about " + COLOR + "8- " + COLOR + "7version/backend info");
-        sender.sendMessage(COLOR + "e/rug skincheck <name> " + COLOR + "8- " + COLOR + "7test skin lookup");
-        sender.sendMessage(COLOR + "e/rug rule playerBackend auto " + COLOR + "8- " + COLOR + "7auto/nms/visual");
-        sender.sendMessage(COLOR + "8Shortcut: " + COLOR + "7/rug <name> spawn [skin]");
+        sender.sendMessage(COLOR + "6Rug " + COLOR + "8- " + COLOR + "7" + VERSION + COLOR + "8 - " + COLOR + "7main hub");
+        sender.sendMessage(COLOR + "e/rug " + COLOR + "8- " + COLOR + "7open the control GUI");
+        sender.sendMessage(COLOR + "e/rug player <name> spawn [skin] " + COLOR + "8- " + COLOR + "7spawn a fake player");
+        sender.sendMessage(COLOR + "e/rug player <name> ... " + COLOR + "8- " + COLOR + "7kill, remove, hand, status, inventory, skin");
+        sender.sendMessage(COLOR + "e/rug players " + COLOR + "8- " + COLOR + "7list tracked fake players");
+        sender.sendMessage(COLOR + "e/rug rules " + COLOR + "8| " + COLOR + "e/rug rule <name> [value] " + COLOR + "8- " + COLOR + "7view/edit rules");
+        sender.sendMessage(COLOR + "e/rug skincheck <name> " + COLOR + "8- " + COLOR + "7test a skin lookup");
+        sender.sendMessage(COLOR + "e/rug purge " + COLOR + "8- " + COLOR + "7force-remove stuck fake players");
+        sender.sendMessage(COLOR + "8Tip: " + COLOR + "7/rug player help " + COLOR + "8shows the full fake-player command list.");
     }
 
     private boolean handleRule(CommandSender sender, String[] args) {
@@ -326,9 +379,14 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
 
     private void showRules(CommandSender sender) {
         FileConfiguration cfg = getConfig();
-        sender.sendMessage(COLOR + "6Rug Rules " + COLOR + "8- " + COLOR + "7use /rug rule <name> <value>");
+        sender.sendMessage(COLOR + "6Rug Rules " + COLOR + "8- " + COLOR + "7use " + COLOR + "e/rug rule <name> <value>");
         for (String rule : RULES) {
-            sender.sendMessage(COLOR + "e" + rule + COLOR + "7: " + COLOR + "f" + cfg.get("rules." + rule));
+            String desc = RULE_DESCRIPTIONS.get(rule);
+            String line = COLOR + "e" + rule + COLOR + "7 = " + COLOR + "f" + cfg.get("rules." + rule);
+            if (desc != null) {
+                line = line + COLOR + "8 - " + COLOR + "7" + desc;
+            }
+            sender.sendMessage(line);
         }
     }
 
@@ -361,7 +419,7 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         // accidentally spawns a fake player.
         if (args.length < 2) {
             sender.sendMessage(PREFIX + COLOR + "cMissing action for " + COLOR + "e" + sanitizeName(args[0]) + COLOR + "c.");
-            sender.sendMessage(PREFIX + COLOR + "7Use /rug player " + sanitizeName(args[0]) + " spawn|kill|remove|hand|status|tp");
+            sender.sendMessage(PREFIX + COLOR + "7Use /rug player " + sanitizeName(args[0]) + " spawn|kill|remove|hand|status|inventory|skin");
             return true;
         }
         ParsedPlayerCommand parsed = parsePlayerCommand(args);
@@ -404,7 +462,11 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
             case "equip":
             case "refresh":
                 return refreshFakeHand(sender, parsed.name);
+            case "inventory":
+            case "inv":
+                return openFakeInventory(sender, parsed.name);
             case "skin":
+                // Re-spawn in place with the requested skin so the change applies cleanly.
                 return spawn(sender, parsed.rawName, parsed.skinName);
             default:
                 sender.sendMessage(PREFIX + COLOR + "cUnknown action. Try /rug player help.");
@@ -414,13 +476,62 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
 
     private void showPlayerHelp(CommandSender sender) {
         sender.sendMessage(COLOR + "6Rug Fake Players " + COLOR + "8- " + COLOR + "7commands");
-        sender.sendMessage(COLOR + "e/rug player <name> spawn [skin] " + COLOR + "8- " + COLOR + "7spawn real-player alpha");
-        sender.sendMessage(COLOR + "e/rug player <name> kill " + COLOR + "8- " + COLOR + "7death message + wither sound");
-        sender.sendMessage(COLOR + "e/rug player <name> remove " + COLOR + "8- " + COLOR + "7quiet remove");
-        sender.sendMessage(COLOR + "e/rug player <name> tp/status " + COLOR + "8- " + COLOR + "7move/check bot");
-        sender.sendMessage(COLOR + "e/rug player <name> hand " + COLOR + "8- " + COLOR + "7refresh held item/equipment");
-        sender.sendMessage(COLOR + "e/rug player list/removeall " + COLOR + "8- " + COLOR + "7manage bots");
-        sender.sendMessage(COLOR + "e/rug player purge " + COLOR + "8- " + COLOR + "7force-remove stuck NMS test players");
+        sender.sendMessage(COLOR + "e/rug player <name> spawn [skin] " + COLOR + "8- " + COLOR + "7spawn a fake player");
+        sender.sendMessage(COLOR + "e/rug player <name> kill " + COLOR + "8- " + COLOR + "7vanilla death, then full cleanup");
+        sender.sendMessage(COLOR + "e/rug player <name> remove " + COLOR + "8- " + COLOR + "7quietly remove it");
+        sender.sendMessage(COLOR + "e/rug player <name> hand " + COLOR + "8- " + COLOR + "7refresh held item / equipment");
+        sender.sendMessage(COLOR + "e/rug player <name> status " + COLOR + "8- " + COLOR + "7backend / skin / tracking info");
+        sender.sendMessage(COLOR + "e/rug player <name> inventory " + COLOR + "8- " + COLOR + "7open its inventory to edit");
+        sender.sendMessage(COLOR + "e/rug player <name> skin <skinName> " + COLOR + "8- " + COLOR + "7re-spawn with a new skin");
+        sender.sendMessage(COLOR + "e/rug player <name> tp " + COLOR + "8- " + COLOR + "7move it to you");
+        sender.sendMessage(COLOR + "e/rug player purge " + COLOR + "8| " + COLOR + "e removeall " + COLOR + "8- " + COLOR + "7clean up stuck / all bots");
+    }
+
+    /**
+     * Opens the fake player's live inventory to the command sender so items can be
+     * viewed/edited. Editing the live inventory avoids item duplication. Guards
+     * against dead/removed/visual-backend fakes so it never crashes.
+     */
+    private boolean openFakeInventory(CommandSender sender, String rawName) {
+        if (!(sender instanceof Player)) {
+            sender.sendMessage(PREFIX + "Run this in-game to open a fake player's inventory.");
+            return true;
+        }
+        Player viewer = (Player) sender;
+        String name = sanitizeName(rawName);
+        FakeHandle fake = getTracked(name);
+        Player target = null;
+        if (fake != null && fake.bukkitPlayer instanceof Player) {
+            target = (Player) fake.bukkitPlayer;
+        } else {
+            Player online = findOnlinePlayerIgnoreCase(name);
+            if (online != null && isLikelyFakeOnlinePlayer(online)) {
+                target = online;
+            }
+        }
+        if (target == null) {
+            sender.sendMessage(PREFIX + COLOR + "cNo live (NMS) fake player named " + COLOR + "e" + name + COLOR + "c to open. Visual-backend bots have no inventory.");
+            return true;
+        }
+        try {
+            boolean dead = false;
+            try { Object d = invokeFlexible(target, "isDead"); dead = Boolean.TRUE.equals(d); } catch (Throwable ignored) {}
+            if (dead || hasTag(target, REMOVING_TAG)) {
+                sender.sendMessage(PREFIX + COLOR + "c" + name + " is dead/removing; nothing to open.");
+                return true;
+            }
+            Inventory inv = (Inventory) invokeFlexible(target, "getInventory");
+            if (inv == null) {
+                sender.sendMessage(PREFIX + COLOR + "cCould not read " + name + "'s inventory.");
+                return true;
+            }
+            viewer.openInventory(inv);
+            invEditing.put(viewer.getUniqueId(), name);
+            sender.sendMessage(PREFIX + "Editing " + COLOR + "e" + name + COLOR + "7's inventory. Close to apply + refresh.");
+        } catch (Throwable throwable) {
+            sender.sendMessage(PREFIX + COLOR + "cCould not open inventory: " + safeText(rootMessage(throwable)));
+        }
+        return true;
     }
 
     private boolean spawn(CommandSender sender, String rawName, String rawSkinName) {
@@ -435,12 +546,10 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         learnName(skinName);
         String name = requestedName;
 
-        // Minecraft names cap at 16 chars. If we truncated, say so plainly and
-        // report the name the fake player actually spawned under.
+        // Minecraft names cap at 16 chars. If we truncated, say so once, plainly.
         String cleanedRequest = rawName == null ? "" : rawName.replaceAll("[^A-Za-z0-9_]", "");
         if (cleanedRequest.length() > 16) {
-            sender.sendMessage(PREFIX + COLOR + "eNames cap at 16 chars, " + COLOR + "7so " + COLOR + "e" + cleanedRequest
-                    + COLOR + "7 spawns as " + COLOR + "e" + name + COLOR + "7.");
+            sender.sendMessage(PREFIX + COLOR + "eName capped at 16 chars" + COLOR + "7; spawned as " + COLOR + "e" + name + COLOR + "7.");
         }
 
         Player realNameConflict = findRealOnlinePlayerIgnoreCase(name);
@@ -450,8 +559,8 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
             skinName = resolveSkinName(realNameConflict.getName());
             learnName(name);
             learnName(skinName);
-            sender.sendMessage(PREFIX + COLOR + "e" + oldName + COLOR + "7 is already a real online player, so Rug spawned " + COLOR + "e" + name + COLOR + "7 using " + COLOR + "e" + skinName + COLOR + "7 as the skin.");
-            sender.sendMessage(PREFIX + "Use /rug rule allowDuplicateOnlineNames true if you really want risky duplicate names.");
+            sender.sendMessage(PREFIX + COLOR + "e" + oldName + COLOR + "7 is a real online player; spawned as " + COLOR + "e" + name + COLOR + "7 instead.");
+            sendVerbose(sender, PREFIX + "Set /rug rule allowDuplicateOnlineNames true to allow risky duplicate names.");
         }
 
         purgeName(name, true);
@@ -461,6 +570,13 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         Object visual = null;
         Object hitbox = null;
 
+        // Resolve the skin once so the spawn line can honestly say whether a real
+        // skin was found or the default skin is in use.
+        SkinResult spawnSkin = resolveSkinProfile(skinName);
+        String skinDesc = (spawnSkin != null && spawnSkin.hasTexture())
+                ? "using skin " + COLOR + "e" + spawnSkin.name + COLOR + "7"
+                : "using default skin";
+
         String backend = ruleText("playerBackend", "auto").toLowerCase(Locale.ROOT);
         if (!backend.equals("visual")) {
             NmsSpawn nms = trySpawnNmsFakePlayer(base, name, skinName);
@@ -468,21 +584,21 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
                 FakeHandle handle = new FakeHandle(name, skinName, uuidOf(nms.bukkitPlayer), null, System.currentTimeMillis(), "nms", nms.bukkitPlayer, nms.nmsPlayer);
                 track(handle);
                 syncFakeEquipment(handle);
-                sender.sendMessage(PREFIX + "Spawned real-player alpha " + COLOR + "e" + name + COLOR + "7. Bukkit sees it as " + COLOR + "e" + nms.bukkitClass + COLOR + "7.");
-                sender.sendMessage(PREFIX + "Skin layers=" + COLOR + "e" + ruleText("skinLayers", "all") + COLOR + "7. Held item refresh runs automatically; /rug player " + name + " hand can force it.");
-                sender.sendMessage(PREFIX + "This is the risky Paper/NMS backend. Use /rug player " + name + " kill if it acts weird.");
+                // One concise line by default; details live behind verboseMessages.
+                sender.sendMessage(PREFIX + "Spawned " + COLOR + "e" + name + COLOR + "7 " + skinDesc + COLOR + "7.");
+                sendVerbose(sender, PREFIX + "Backend=nms (" + nms.bukkitClass + "), skinLayers=" + ruleText("skinLayers", "all") + ". Use /rug player " + name + " status for details.");
                 return true;
             }
             if (backend.equals("nms")) {
                 sender.sendMessage(PREFIX + COLOR + "cNMS spawn failed: " + safeText(nms.message));
-                sender.sendMessage(PREFIX + COLOR + "7Set /rug rule playerBackend auto or visual to use fallback mode.");
+                sendVerbose(sender, PREFIX + COLOR + "7Set /rug rule playerBackend auto or visual to use fallback mode.");
                 return true;
             }
-            sender.sendMessage(PREFIX + COLOR + "eNMS alpha failed, using visual fallback: " + safeText(nms.message));
+            sendVerbose(sender, PREFIX + COLOR + "eNMS backend failed, using visual fallback: " + safeText(nms.message));
         }
 
         if (ruleBool("playerVisualEnabled", true)) {
-            visual = spawnPlayerVisual(base, name, skinName);
+            visual = spawnPlayerVisual(base, name, skinName, spawnSkin);
         }
         if (ruleBool("hitboxEnabled", true)) {
             hitbox = spawnHitbox(base, name, skinName);
@@ -490,8 +606,7 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
 
         track(new FakeHandle(name, skinName, uuidOf(visual), uuidOf(hitbox), System.currentTimeMillis(), "visual", null, null));
         playConfiguredSound("summonAlertSound", 1.0f, 1.0f);
-        sender.sendMessage(PREFIX + "Spawned " + COLOR + "e" + name + COLOR + "7 with skin/head " + COLOR + "e" + skinName + COLOR + "7.");
-        sender.sendMessage(PREFIX + "Backend=visual fallback. Set /rug rule playerBackend nms to force NMS only.");
+        sender.sendMessage(PREFIX + "Spawned " + COLOR + "e" + name + COLOR + "7 " + skinDesc + COLOR + "7 (visual backend).");
         return true;
     }
 
@@ -615,7 +730,7 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         return removeTagged(HITBOX_TAG, name, markRemoving) + removeTagged(VISUAL_TAG, name, markRemoving) + removeNmsEntities(name, markRemoving);
     }
 
-    private Object spawnPlayerVisual(Location base, String name, String skinName) {
+    private Object spawnPlayerVisual(Location base, String name, String skinName, SkinResult skin) {
         Location loc = cloneAndOffset(base, 0.0, 0.0, 0.0);
         Object stand = spawnEntity(loc, "ARMOR_STAND");
         tagEntity(stand, VISUAL_TAG, name, skinName);
@@ -630,7 +745,7 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         invokeIfExists(stand, "setBasePlate", new Class[]{boolean.class}, false);
         invokeIfExists(stand, "setSmall", new Class[]{boolean.class}, false);
         invokeIfExists(stand, "setCollidable", new Class[]{boolean.class}, false);
-        equipPlayerLook(stand, skinName);
+        equipPlayerLook(stand, skinName, skin);
         return stand;
     }
 
@@ -781,8 +896,9 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         if (!copied) {
             copied = fetchMojangSkin(targetProfile, skinName);
         }
-        if (!copied) {
-            getLogger().warning("No skin textures found for " + skinName + ". Using default skin. Try /rug skincheck " + skinName);
+        if (!copied && verbose()) {
+            // Expected for offline/unknown names; only mention it in verbose mode.
+            getLogger().info("No skin textures found for " + skinName + ". Using default skin. Try /rug skincheck " + skinName);
         }
     }
 
@@ -802,8 +918,8 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         if (mojang.hasTexture()) return cacheSkin(clean, mojang);
 
         SkinResult failed = paper.error != null && !paper.error.isEmpty() ? paper : mojang;
-        if (mojang.error != null && mojang.error.contains("429")) {
-            getLogger().warning("Skin lookup for " + clean + " is rate limited (HTTP 429). Using cached or default skin.");
+        if (mojang.error != null && mojang.error.contains("429") && verbose()) {
+            getLogger().info("Skin lookup for " + clean + " is rate limited (HTTP 429). Using cached or default skin.");
         }
         return cacheSkin(clean, failed);
     }
@@ -1514,6 +1630,11 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         if (nmsPlayer == null && bukkitPlayer instanceof Player) {
             nmsPlayer = invokeFirst(bukkitPlayer, new String[]{"getHandle"}, new Class[]{}, new Object[]{});
         }
+        // Tell every real client to drop the tab-list entry AND the in-world
+        // entity. Clientless fake players are not always untracked automatically,
+        // which is exactly how a dead "corpse" gets left lying around. Send these
+        // first, while the entity id / uuid are still readable.
+        broadcastFakeRemovalPackets(nmsPlayer, bukkitPlayer);
         if (nmsPlayer != null) {
             tryRemoveFromPlayerList(nmsPlayer);
             tryRemoveFromLevel(nmsPlayer);
@@ -1530,6 +1651,72 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
             invokeIfExists(bukkitPlayer, "kickPlayer", new Class[]{String.class}, "Rug removed");
             invokeIfExists(bukkitPlayer, "remove", new Class[]{}, new Object[]{});
         }
+    }
+
+    /**
+     * Sends ClientboundPlayerInfoRemovePacket (drop the tab-list/profile entry)
+     * and ClientboundRemoveEntitiesPacket (despawn the body client-side) to every
+     * real viewer. This is what makes a dead fake player actually disappear
+     * instead of leaving a stuck corpse. All reflective, no packet library.
+     */
+    private void broadcastFakeRemovalPackets(Object nmsPlayer, Object bukkitPlayer) {
+        try {
+            int entityId = readEntityId(bukkitPlayer, nmsPlayer);
+            UUID uuid = uuidOf(bukkitPlayer);
+            if (uuid == null && nmsPlayer != null) {
+                try { uuid = (UUID) invokeFlexible(nmsPlayer, "getUUID"); } catch (Throwable ignored) {}
+            }
+            Object infoRemove = uuid == null ? null : constructPlayerInfoRemovePacket(uuid);
+            Object entityRemove = entityId == 0 ? null : constructRemoveEntitiesPacket(entityId);
+            if (infoRemove == null && entityRemove == null) return;
+            for (Player viewer : onlinePlayers()) {
+                if (isLikelyFakeOnlinePlayer(viewer)) continue;
+                if (infoRemove != null) sendPacket(viewer, infoRemove);
+                if (entityRemove != null) sendPacket(viewer, entityRemove);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private int readEntityId(Object bukkitPlayer, Object nmsPlayer) {
+        int id = 0;
+        try { if (bukkitPlayer != null) id = ((Number) invokeFlexible(bukkitPlayer, "getEntityId")).intValue(); } catch (Throwable ignored) {}
+        if (id == 0 && nmsPlayer != null) {
+            try { id = ((Number) invokeFlexible(nmsPlayer, "getId")).intValue(); } catch (Throwable ignored) {}
+        }
+        return id;
+    }
+
+    private Object constructPlayerInfoRemovePacket(UUID uuid) {
+        try {
+            Class<?> packetClass = Class.forName("net.minecraft.network.protocol.game.ClientboundPlayerInfoRemovePacket");
+            List<UUID> ids = new ArrayList<UUID>();
+            ids.add(uuid);
+            for (Constructor<?> ctor : packetClass.getDeclaredConstructors()) {
+                Class<?>[] types = ctor.getParameterTypes();
+                if (types.length == 1 && types[0].isAssignableFrom(List.class)) {
+                    ctor.setAccessible(true);
+                    return ctor.newInstance(ids);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private Object constructRemoveEntitiesPacket(int entityId) {
+        try {
+            Class<?> packetClass = Class.forName("net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket");
+            for (Constructor<?> ctor : packetClass.getDeclaredConstructors()) {
+                Class<?>[] types = ctor.getParameterTypes();
+                if (types.length == 1 && types[0] == int[].class) {
+                    ctor.setAccessible(true);
+                    return ctor.newInstance((Object) new int[]{entityId});
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
     }
 
     private void tryRemoveFromLevel(Object nmsPlayer) {
@@ -1822,10 +2009,10 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         invokeIfExists(entity, "addScoreboardTag", new Class[]{String.class}, skinTag(skinName));
     }
 
-    private void equipPlayerLook(Object entity, String skinName) {
+    private void equipPlayerLook(Object entity, String skinName, SkinResult skin) {
         try {
             Object equipment = invokeRequired(entity, "getEquipment", new Class[]{}, new Object[]{});
-            Object head = makePlayerHead(skinName);
+            Object head = makePlayerHead(skinName, skin);
             if (head != null) {
                 invokeIfExists(equipment, "setHelmet", new Class[]{Class.forName("org.bukkit.inventory.ItemStack")}, head);
             }
@@ -1847,20 +2034,52 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         }
     }
 
-    private Object makePlayerHead(String skinName) {
+    /**
+     * Builds the visual-backend helmet head. We prefer the actual resolved skin
+     * texture (so the dummy wears the requested player's face instead of the
+     * default fallback head). We fall back to an owner-based head, then to a
+     * plain head, and never spam warnings about missing skins.
+     */
+    private Object makePlayerHead(String skinName, SkinResult skin) {
+        Object item = makeItem("PLAYER_HEAD");
+        if (item == null || !ruleBool("playerHeadEnabled", true)) {
+            return item;
+        }
+        // 1) Best: stamp the resolved texture straight onto the head's profile.
+        if (skin != null && skin.hasTexture() && applyHeadTexture(item, skinName, skin)) {
+            return item;
+        }
+        // 2) Fallback: owner-based head (resolves online/known players' faces).
         try {
-            Object item = makeItem("PLAYER_HEAD");
-            if (item == null || !ruleBool("playerHeadEnabled", true)) {
-                return item;
-            }
             Object meta = invokeRequired(item, "getItemMeta", new Class[]{}, new Object[]{});
             Object offlinePlayer = invokeStaticRequired(Bukkit.class, "getOfflinePlayer", new Class[]{String.class}, skinName);
             invokeIfExists(meta, "setOwningPlayer", new Class[]{Class.forName("org.bukkit.OfflinePlayer")}, offlinePlayer);
             invokeIfExists(item, "setItemMeta", new Class[]{Class.forName("org.bukkit.inventory.meta.ItemMeta")}, meta);
-            return item;
         } catch (Throwable throwable) {
             getLogger().fine("Could not build player head for " + skinName + ": " + rootMessage(throwable));
-            return makeItem("PLAYER_HEAD");
+        }
+        // 3) Plain head if nothing resolved. Clean default, no warning.
+        return item;
+    }
+
+    /** Writes the resolved skin texture onto a PLAYER_HEAD via its Paper profile. */
+    private boolean applyHeadTexture(Object headItem, String skinName, SkinResult skin) {
+        try {
+            Object meta = invokeRequired(headItem, "getItemMeta", new Class[]{}, new Object[]{});
+            if (meta == null) return false;
+            UUID id = UUID.nameUUIDFromBytes(("RugHead:" + sanitizeName(skinName)).getBytes(StandardCharsets.UTF_8));
+            Object profile = invokeStaticFlexible(Bukkit.class, "createProfile", id, sanitizeName(skinName));
+            if (profile == null) return false;
+            if (!addPaperProfileProperty(profile, skin.value, skin.signature)) {
+                return false;
+            }
+            // SkullMeta#setPlayerProfile(PlayerProfile) on Paper.
+            invokeFlexible(meta, "setPlayerProfile", profile);
+            invokeIfExists(headItem, "setItemMeta", new Class[]{Class.forName("org.bukkit.inventory.meta.ItemMeta")}, meta);
+            return true;
+        } catch (Throwable throwable) {
+            getLogger().fine("Could not stamp skin texture on head for " + skinName + ": " + rootMessage(throwable));
+            return false;
         }
     }
 
@@ -1989,6 +2208,116 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         }
     }
 
+    /** Fake-player list page: each tracked fake is a clickable head. */
+    private void openPlayersGui(Player player) {
+        try {
+            Inventory inv = (Inventory) createInventoryReflect(54, GUI_PLAYERS_TITLE);
+            fillGui(inv);
+            int slot = 0;
+            for (FakeHandle fake : new ArrayList<FakeHandle>(tracked.values())) {
+                if (slot >= 45) break;
+                putGuiItem(inv, slot, Material.PLAYER_HEAD, COLOR + "a" + fake.name, fakeStatusLore(fake));
+                slot++;
+            }
+            if (tracked.isEmpty()) {
+                putGuiItem(inv, 22, Material.BARRIER, COLOR + "7No fake players tracked", Arrays.asList(
+                        COLOR + "8Use /rug player <name> spawn [skin]"));
+            }
+            putGuiItem(inv, 49, Material.ARROW, COLOR + "eBack", Arrays.asList(COLOR + "7Return to Rug Control."));
+            player.openInventory(inv);
+        } catch (Throwable throwable) {
+            player.sendMessage(PREFIX + COLOR + "cGUI failed: " + safeText(rootMessage(throwable)));
+        }
+    }
+
+    private List<String> fakeStatusLore(FakeHandle fake) {
+        List<String> lore = new ArrayList<String>();
+        boolean alive = true;
+        try {
+            if (fake.bukkitPlayer instanceof Player) {
+                Object dead = invokeFlexible(fake.bukkitPlayer, "isDead");
+                alive = !Boolean.TRUE.equals(dead);
+            }
+        } catch (Throwable ignored) {}
+        lore.add(COLOR + "7State: " + (alive ? COLOR + "aalive" : COLOR + "cdead/removing"));
+        lore.add(COLOR + "7Backend: " + COLOR + "f" + fake.backend);
+        lore.add(COLOR + "7Skin: " + COLOR + "f" + fake.skinName);
+        try {
+            if (fake.bukkitPlayer instanceof Player) {
+                Location loc = ((Player) fake.bukkitPlayer).getLocation();
+                String world = loc.getWorld() == null ? "?" : loc.getWorld().getName();
+                lore.add(COLOR + "7At: " + COLOR + "f" + world + " " + (int) loc.getX() + "," + (int) loc.getY() + "," + (int) loc.getZ());
+            }
+        } catch (Throwable ignored) {}
+        lore.add(COLOR + "8Click to manage");
+        return lore;
+    }
+
+    /** Per-fake detail page. The bound name is kept in guiBotName for the viewer. */
+    private void openDetailGui(Player player, String name) {
+        try {
+            guiBotName.put(player.getUniqueId(), name);
+            Inventory inv = (Inventory) createInventoryReflect(27, GUI_DETAIL_TITLE);
+            fillGui(inv);
+            FakeHandle fake = getTracked(name);
+            putGuiItem(inv, 4, Material.PLAYER_HEAD, COLOR + "a" + name,
+                    fake == null ? Arrays.asList(COLOR + "cNot tracked anymore") : fakeStatusLore(fake));
+            putGuiItem(inv, 10, Material.IRON_SWORD, COLOR + "cKill", Arrays.asList(COLOR + "7Vanilla death, then full cleanup."));
+            putGuiItem(inv, 11, Material.BARRIER, COLOR + "cRemove", Arrays.asList(COLOR + "7Quietly remove this fake player."));
+            putGuiItem(inv, 12, Material.STICK, COLOR + "eRefresh hand", Arrays.asList(COLOR + "7Re-sync held item / equipment."));
+            putGuiItem(inv, 13, Material.CHEST, COLOR + "bOpen inventory", Arrays.asList(COLOR + "7Edit its inventory (live, no dupes)."));
+            putGuiItem(inv, 14, Material.ENDER_PEARL, COLOR + "aTeleport to it", Arrays.asList(COLOR + "7Teleport yourself to the fake."));
+            putGuiItem(inv, 15, Material.ENDER_EYE, COLOR + "aBring it to you", Arrays.asList(COLOR + "7Teleport the fake to you."));
+            putGuiItem(inv, 16, Material.NAME_TAG, COLOR + "bChange skin", Arrays.asList(
+                    COLOR + "7Use " + COLOR + "f/rug player " + name + " skin <skinName>",
+                    COLOR + "8GUI text input isn't available; command applies it."));
+            putGuiItem(inv, 22, Material.ARROW, COLOR + "eBack", Arrays.asList(COLOR + "7Back to the fake-player list."));
+            player.openInventory(inv);
+        } catch (Throwable throwable) {
+            player.sendMessage(PREFIX + COLOR + "cGUI failed: " + safeText(rootMessage(throwable)));
+        }
+    }
+
+    /** Cleanup / purge page. */
+    private void openCleanupGui(Player player) {
+        try {
+            Inventory inv = (Inventory) createInventoryReflect(27, GUI_CLEANUP_TITLE);
+            fillGui(inv);
+            putGuiItem(inv, 11, Material.BARRIER, COLOR + "cPurge stuck / dead bots", Arrays.asList(
+                    COLOR + "7Force-remove stuck fake players and",
+                    COLOR + "7any leftover dead bodies."));
+            putGuiItem(inv, 13, Material.TNT, COLOR + "cRemove ALL fake players", Arrays.asList(
+                    COLOR + "7Remove every tracked fake player."));
+            putGuiItem(inv, 15, Material.COMPASS, COLOR + "eRefresh registry", Arrays.asList(
+                    COLOR + "7Re-scan and refresh this page."));
+            putGuiItem(inv, 22, Material.ARROW, COLOR + "eBack", Arrays.asList(COLOR + "7Return to Rug Control."));
+            player.openInventory(inv);
+        } catch (Throwable throwable) {
+            player.sendMessage(PREFIX + COLOR + "cGUI failed: " + safeText(rootMessage(throwable)));
+        }
+    }
+
+    /** Skin / profile tools page. */
+    private void openSkinGui(Player player) {
+        try {
+            Inventory inv = (Inventory) createInventoryReflect(27, GUI_SKIN_TITLE);
+            fillGui(inv);
+            putGuiItem(inv, 11, Material.PLAYER_HEAD, COLOR + "bSkincheck me", Arrays.asList(
+                    COLOR + "7Test the skin lookup for your name."));
+            putGuiItem(inv, 13, Material.LEATHER_CHESTPLATE, COLOR + "eCycle skin layers", Arrays.asList(
+                    COLOR + "7Current: " + COLOR + "f" + ruleText("skinLayers", "all"),
+                    COLOR + "8Click to toggle all/none."));
+            putGuiItem(inv, 15, Material.NAME_TAG, COLOR + "bChange a fake's skin", Arrays.asList(
+                    COLOR + "7Use " + COLOR + "f/rug player <name> skin <skinName>",
+                    COLOR + "8Copies that player's profile texture if found.",
+                    COLOR + "8Capes only show if the source profile has one."));
+            putGuiItem(inv, 22, Material.ARROW, COLOR + "eBack", Arrays.asList(COLOR + "7Return to Rug Control."));
+            player.openInventory(inv);
+        } catch (Throwable throwable) {
+            player.sendMessage(PREFIX + COLOR + "cGUI failed: " + safeText(rootMessage(throwable)));
+        }
+    }
+
     private Object createInventoryReflect(int size, String title) throws Exception {
         for (Method method : Bukkit.class.getMethods()) {
             if (!method.getName().equals("createInventory")) continue;
@@ -2054,40 +2383,145 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
     public void onRulesGuiClick(InventoryClickEvent event) {
         try {
             String title = String.valueOf(event.getView().getTitle());
-            if (!title.equals(GUI_TITLE) && !title.equals(GUI_RULES_TITLE)) return;
+            boolean ours = title.equals(GUI_TITLE) || title.equals(GUI_RULES_TITLE) || title.equals(GUI_PLAYERS_TITLE)
+                    || title.equals(GUI_DETAIL_TITLE) || title.equals(GUI_CLEANUP_TITLE) || title.equals(GUI_SKIN_TITLE);
+            if (!ours) return;
             event.setCancelled(true);
             Object who = event.getWhoClicked();
             if (!(who instanceof Player)) return;
             Player player = (Player) who;
             int slot = event.getRawSlot();
+
             if (title.equals(GUI_TITLE)) {
-                if (slot == 10) {
-                    showPlayerHelp(player);
-                    player.sendMessage(PREFIX + "Tracked fake players: " + COLOR + "e" + (tracked.isEmpty() ? "none" : String.join(", ", trackedNames())));
-                } else if (slot == 12) {
-                    openRulesGui(player);
-                } else if (slot == 14) {
-                    SkinResult result = resolveSkinProfile(player.getName());
-                    player.sendMessage(PREFIX + "Skincheck " + COLOR + "e" + player.getName() + COLOR + "7: " + result.statusLine());
-                    player.sendMessage(PREFIX + "Skin layer mask now: " + COLOR + "e" + skinLayerMask() + COLOR + "7 (" + ruleText("skinLayers", "all") + ")");
-                } else if (slot == 16) {
-                    purgeFakePlayers(player);
-                    openMainGui(player);
-                } else if (slot == 22) {
+                if (slot == 10) openPlayersGui(player);
+                else if (slot == 12) openRulesGui(player);
+                else if (slot == 14) openSkinGui(player);
+                else if (slot == 16) openCleanupGui(player);
+                else if (slot == 22) {
                     player.sendMessage(PREFIX + DISPLAY_NAME + COLOR + "7 " + COLOR + "e" + VERSION + COLOR + "7 by " + COLOR + "eDawsonCodes" + COLOR + "7.");
                     showMainHelp(player);
                 }
                 return;
             }
-            if (slot == 49) {
-                openMainGui(player);
+
+            if (title.equals(GUI_PLAYERS_TITLE)) {
+                if (slot == 49) { openMainGui(player); return; }
+                String name = clickedName(event.getCurrentItem());
+                if (name != null && getTracked(name) != null) openDetailGui(player, name);
                 return;
             }
+
+            if (title.equals(GUI_DETAIL_TITLE)) {
+                handleDetailClick(player, slot);
+                return;
+            }
+
+            if (title.equals(GUI_CLEANUP_TITLE)) {
+                if (slot == 11) { purgeFakePlayers(player); openCleanupGui(player); }
+                else if (slot == 13) { removeAll(player); openCleanupGui(player); }
+                else if (slot == 15) openCleanupGui(player);
+                else if (slot == 22) openMainGui(player);
+                return;
+            }
+
+            if (title.equals(GUI_SKIN_TITLE)) {
+                if (slot == 11) {
+                    SkinResult result = resolveSkinProfile(player.getName());
+                    player.sendMessage(PREFIX + "Skincheck " + COLOR + "e" + player.getName() + COLOR + "7: " + result.statusLine());
+                } else if (slot == 13) {
+                    cycleGuiRule("skinLayers");
+                    player.sendMessage(PREFIX + "Skin layers: " + COLOR + "e" + ruleText("skinLayers", "all") + COLOR + "7.");
+                    openSkinGui(player);
+                } else if (slot == 22) {
+                    openMainGui(player);
+                }
+                return;
+            }
+
+            // Rules page.
+            if (slot == 49) { openMainGui(player); return; }
             String rule = ruleFromGuiSlot(slot);
             if (rule == null) return;
             cycleGuiRule(rule);
             player.sendMessage(PREFIX + "Set " + COLOR + "e" + rule + COLOR + "7 to " + COLOR + "e" + ruleText(rule, "?") + COLOR + "7.");
             openRulesGui(player);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void handleDetailClick(Player player, int slot) {
+        String name = guiBotName.get(player.getUniqueId());
+        if (name == null) { openPlayersGui(player); return; }
+        switch (slot) {
+            case 10: killFake(player, name); player.closeInventory(); break;
+            case 11: removeFake(player, name, true, false); openPlayersGui(player); break;
+            case 12: refreshFakeHand(player, name); break;
+            case 13: openFakeInventory(player, name); break;
+            case 14: teleportToFake(player, name); player.closeInventory(); break;
+            case 15: moveHere(player, name, null); break;
+            case 16: player.sendMessage(PREFIX + "Use " + COLOR + "f/rug player " + name + " skin <skinName>" + COLOR + "7 to change its skin."); break;
+            case 22: openPlayersGui(player); break;
+            default: break;
+        }
+    }
+
+    private void teleportToFake(Player player, String name) {
+        FakeHandle fake = getTracked(name);
+        if (fake != null && fake.bukkitPlayer instanceof Entity) {
+            try {
+                player.teleport(((Entity) fake.bukkitPlayer).getLocation());
+                player.sendMessage(PREFIX + "Teleported to " + COLOR + "e" + name + COLOR + "7.");
+                return;
+            } catch (Throwable ignored) {}
+        }
+        List<Object> targets = findByTag(VISUAL_TAG, name);
+        if (targets.isEmpty()) targets = findByTag(HITBOX_TAG, name);
+        for (Object entity : targets) {
+            if (entity instanceof Entity) {
+                try {
+                    player.teleport(((Entity) entity).getLocation());
+                    player.sendMessage(PREFIX + "Teleported to " + COLOR + "e" + name + COLOR + "7.");
+                    return;
+                } catch (Throwable ignored) {}
+            }
+        }
+        player.sendMessage(PREFIX + COLOR + "cCould not locate " + name + ".");
+    }
+
+    private String clickedName(ItemStack item) {
+        try {
+            if (item == null) return null;
+            ItemMeta meta = item.getItemMeta();
+            if (meta == null || !meta.hasDisplayName()) return null;
+            return sanitizeName(stripColor(meta.getDisplayName()));
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static String stripColor(String text) {
+        if (text == null) return null;
+        return text.replaceAll("(?i)" + COLOR + "[0-9A-FK-OR]", "");
+    }
+
+    @EventHandler
+    public void onInventoryClose(InventoryCloseEvent event) {
+        try {
+            Object who = event.getPlayer();
+            if (!(who instanceof Player)) return;
+            Player player = (Player) who;
+            String name = invEditing.remove(player.getUniqueId());
+            if (name == null) return;
+            // Apply edits by re-syncing the fake's held item / equipment.
+            FakeHandle fake = getTracked(name);
+            if (fake != null) {
+                syncFakeEquipment(fake);
+            } else {
+                Player online = findOnlinePlayerIgnoreCase(name);
+                if (online != null && isLikelyFakeOnlinePlayer(online)) {
+                    refreshFakePlayerEquipment(online);
+                }
+            }
         } catch (Throwable ignored) {
         }
     }
@@ -2173,7 +2607,7 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
     public void onFakePlayerDamaged(EntityDamageByEntityEvent event) {
         try {
             Entity victim = event.getEntity();
-            if (!(victim instanceof Player) || !isNmsFakeEntity(victim)) return;
+            if (!isRugFakeEntity(victim)) return;
             Entity attacker = event.getDamager();
             if (attacker == null) return;
             double kb = ruleDouble("punchKnockback", 0.55d);
@@ -2189,29 +2623,35 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
                 dir = look.lengthSquared() < 0.0001d ? new Vector(0.0d, 0.0d, 1.0d) : look;
             }
             dir.normalize().multiply(kb);
-            // Bukkit velocity does nothing on a clientless fake player, so this is
-            // only a hint; the real movement is the NMS/teleport slide below.
-            Vector velocity = dir.clone();
-            velocity.setY(0.36d);
-            try { victim.setVelocity(velocity); } catch (Throwable ignored) {}
-            knockbackFakePlayer(victim, dir);
+
+            if (victim instanceof Player && isNmsFakeEntity(victim)) {
+                Vector velocity = dir.clone();
+                velocity.setY(0.4d);
+                try { victim.setVelocity(velocity); } catch (Throwable ignored) {}
+                knockbackFakePlayer(victim, dir);
+            } else if (hasTag(victim, HITBOX_TAG) || hasTag(victim, VISUAL_TAG)) {
+                // Visual backend: the hittable zombie reacts to Bukkit velocity; we
+                // drag its paired armor-stand visual along so they move together.
+                knockbackVisualFake(victim, dir);
+            }
         } catch (Throwable ignored) {
         }
     }
 
     /**
      * Knocks a fake player around like a Carpet bot. A clientless player never
-     * applies velocity itself, so we set NMS delta movement once and then slide
-     * the real server-side entity over a few ticks; the entity tracker
-     * broadcasts the new position to real viewers.
+     * applies velocity itself, so we set NMS delta movement, broadcast a motion
+     * packet for client-side animation, then slide the real server-side entity
+     * over several ticks; the entity tracker broadcasts the new position too.
      */
     private void knockbackFakePlayer(final Entity victim, final Vector horizontal) {
         if (victim == null || horizontal == null) return;
         final Object nms = victim instanceof Player
                 ? invokeFirst(victim, new String[]{"getHandle"}, new Class[]{}, new Object[]{})
                 : null;
-        setNmsDeltaMovement(nms, horizontal.getX(), 0.36d, horizontal.getZ());
-        final double[] decay = {0.55d, 0.34d, 0.18d, 0.08d};
+        setNmsDeltaMovement(nms, horizontal.getX(), 0.4d, horizontal.getZ());
+        broadcastMotionPacket(victim, nms, horizontal);
+        final double[] decay = {0.7d, 0.5d, 0.34d, 0.22d, 0.12d, 0.06d};
         for (int i = 0; i < decay.length; i++) {
             final double factor = decay[i];
             runLater(new Runnable() {
@@ -2222,8 +2662,8 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
                         try { dead = invokeFlexible(victim, "isDead"); } catch (Throwable ignored) {}
                         if (Boolean.TRUE.equals(dead)) return;
                         Location loc = victim.getLocation();
-                        double dx = Math.max(-0.9d, Math.min(0.9d, horizontal.getX() * factor));
-                        double dz = Math.max(-0.9d, Math.min(0.9d, horizontal.getZ() * factor));
+                        double dx = clampSlide(horizontal.getX() * factor);
+                        double dz = clampSlide(horizontal.getZ() * factor);
                         Location moved = loc.clone();
                         moved.add(dx, 0.0d, dz);
                         moveFakePlayerTo(victim, nms, moved);
@@ -2232,6 +2672,67 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
                 }
             }, (long) (i + 1));
         }
+    }
+
+    /** Visual-backend knockback: shove the hitbox and keep the visual stand on it. */
+    private void knockbackVisualFake(final Entity victim, final Vector horizontal) {
+        if (victim == null || horizontal == null) return;
+        final String name = nameFromEntityOrTags(victim);
+        Vector velocity = horizontal.clone();
+        velocity.setY(0.4d);
+        try { victim.setVelocity(velocity); } catch (Throwable ignored) {}
+        for (int i = 1; i <= 6; i++) {
+            runLater(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        if (victim.isDead()) return;
+                        Location target = victim.getLocation();
+                        for (Object vis : findByTag(VISUAL_TAG, name)) {
+                            if (vis instanceof Entity && vis != victim) {
+                                try { ((Entity) vis).teleport(target); } catch (Throwable ignored) {}
+                            }
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }, (long) i);
+        }
+    }
+
+    private static double clampSlide(double value) {
+        return Math.max(-1.1d, Math.min(1.1d, value));
+    }
+
+    private void broadcastMotionPacket(Entity victim, Object nms, Vector horizontal) {
+        try {
+            int entityId = readEntityId(victim, nms);
+            if (entityId == 0) return;
+            Object packet = constructMotionPacket(entityId, horizontal.getX(), 0.4d, horizontal.getZ());
+            if (packet == null) return;
+            for (Player viewer : onlinePlayers()) {
+                if (isLikelyFakeOnlinePlayer(viewer)) continue;
+                sendPacket(viewer, packet);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private Object constructMotionPacket(int entityId, double x, double y, double z) {
+        try {
+            Class<?> vec3 = firstClass("net.minecraft.world.phys.Vec3");
+            Object v = vec3.getConstructor(double.class, double.class, double.class).newInstance(x, y, z);
+            Class<?> packetClass = Class.forName("net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket");
+            for (Constructor<?> ctor : packetClass.getDeclaredConstructors()) {
+                Class<?>[] types = ctor.getParameterTypes();
+                if (types.length == 2 && (types[0] == int.class || types[0] == Integer.class) && types[1].isAssignableFrom(vec3)) {
+                    ctor.setAccessible(true);
+                    return ctor.newInstance(Integer.valueOf(entityId), v);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
     }
 
     private void setNmsDeltaMovement(Object nms, double x, double y, double z) {
@@ -2608,12 +3109,23 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         invokeIfExists(event, "setKeepLevel", new Class[]{boolean.class}, false);
         invokeIfExists(entity, "addScoreboardTag", new Class[]{String.class}, REMOVING_TAG);
 
-        String name = nameFromEntityOrTags(entity);
+        final String name = nameFromEntityOrTags(entity);
         FakeHandle dyingFake = getTracked(name);
         // Delayed removal so the vanilla death message broadcasts first, then the
         // PlayerList/world/tracking cleanup removes the corpse cleanly.
         scheduleNmsRemoval(name, entity, dyingFake);
         untrack(name);
+        // A clientless fake never produces its own vanilla "left the game" line,
+        // which is why leave behaviour looked broken. Emit one clean leave line
+        // just after the death message instead of relying on the disconnect path.
+        if (ruleBool("sendQuitMessage", true)) {
+            runLater(new Runnable() {
+                @Override
+                public void run() {
+                    broadcastFakeQuit(name);
+                }
+            }, 3L);
+        }
         playConfiguredSound("deathAlertSound", 1.0f, 1.0f);
     }
 
@@ -2685,9 +3197,13 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
                 hardRemoveNmsPlayer(fake == null ? null : fake.nmsPlayer, entityLater);
             }
         };
+        // Several passes across a few ticks: the first runs after Paper finishes
+        // broadcasting the death, later passes catch any corpse Paper re-adds.
+        runLater(cleanup, 1L);
         runLater(cleanup, 2L);
         runLater(cleanup, 10L);
         runLater(cleanup, 40L);
+        runLater(cleanup, 60L);
     }
 
     private void clearDeathDrops(EntityDeathEvent event) {
@@ -2789,57 +3305,64 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
 
     private List<String> completeRug(String[] args) {
         if (args.length == 1) {
-            return filter(Arrays.asList("help", "about", "menu", "gui", "rules", "rule", "reload", "player", "list", "removeall", "purge", "skincheck"), args[0]);
+            return filter(RUG_SUGGEST, args[0]);
         }
-        if (args.length == 2 && is(args[0], "rule")) {
-            return filter(RULES, args[1]);
+        if (is(args[0], "rule")) {
+            if (args.length == 2) return filter(RULES, args[1]);
+            if (args.length == 3) return filter(ruleValueSuggestions(args[1]), args[2]);
+            return Collections.emptyList();
         }
-        if (args.length == 3 && is(args[0], "rule")) {
-            return filter(Arrays.asList("true", "false", "all", "none", "cape,jacket,sleeves,pants,hat", "wither", "guardian", "dragon", "hurt"), args[2]);
+        if (is(args[0], "skincheck")) {
+            return args.length == 2 ? filter(unique(suggestableNames()), args[1]) : Collections.<String>emptyList();
         }
         if (isPlayerNamespace(args[0])) {
             return completePlayer(tail(args));
         }
+        // Shortcut form: /rug <name> <action> [skin].
         if (args.length == 2) {
-            if (PLAYER_ACTIONS.contains(args[0].toLowerCase(Locale.ROOT))) {
-                List<String> names = new ArrayList<String>(trackedNames());
-                if (names.isEmpty()) names.add(DEFAULT_NAME);
-                return filter(names, args[1]);
-            }
-            return filter(Arrays.asList("spawn", "kill", "remove", "tp", "status"), args[1]);
+            return filter(PLAYER_ACTION_SUGGEST, args[1]);
         }
-        if (args.length == 3 && is(args[1], "spawn")) {
-            return filter(Arrays.asList(args[0], DEFAULT_NAME, "TestBot"), args[2]);
+        if (args.length == 3 && (is(args[1], "spawn") || is(args[1], "skin"))) {
+            return filter(unique(suggestableNames()), args[2]);
         }
         return Collections.emptyList();
     }
 
+    private List<String> ruleValueSuggestions(String rule) {
+        String r = rule == null ? "" : rule.toLowerCase(Locale.ROOT);
+        if (r.equals("playerbackend")) return Arrays.asList("auto", "nms", "visual");
+        if (r.equals("skinlayers")) return Arrays.asList("all", "none", "cape,jacket,sleeves,pants,hat");
+        if (r.equals("punchknockback")) return Arrays.asList("0", "0.55", "1.25");
+        if (r.equals("deathalertsound") || r.equals("summonalertsound")) return Arrays.asList("none", "wither", "guardian", "dragon", "hurt");
+        return Arrays.asList("true", "false");
+    }
+
     private List<String> completePlayer(String[] args) {
-        if (args.length == 0) {
-            return Collections.emptyList();
-        }
-        if (args.length == 1) {
-            String typed = args[0] == null ? "" : args[0];
-            List<String> out = new ArrayList<>();
-            if (typed.isEmpty()) {
-                out.addAll(PLAYER_ROOT_ACTIONS);
-                out.addAll(Arrays.asList("spawn", "remove", "kill", "tp", "status", "hand"));
-            } else {
-                out.addAll(PLAYER_ROOT_ACTIONS);
-                out.addAll(PLAYER_ACTIONS);
-                out.addAll(suggestableNames());
-            }
+        // Name position (or root action): tracked fakes + generic defaults + roots.
+        if (args.length <= 1) {
+            String typed = args.length == 0 ? "" : (args[0] == null ? "" : args[0]);
+            List<String> out = new ArrayList<String>();
+            out.add("purge");
+            out.add("removeall");
+            out.addAll(trackedNames());
+            out.addAll(DEFAULT_NAME_SUGGESTIONS);
             return filter(unique(out), typed);
         }
+        // Action position. Root keywords take no further args.
         if (args.length == 2) {
             String first = args[0].toLowerCase(Locale.ROOT);
-            if (PLAYER_ACTIONS.contains(first) || PLAYER_ROOT_ACTIONS.contains(first)) {
-                return filter(unique(suggestableNames()), args[1]);
+            if (first.equals("purge") || first.equals("removeall") || first.equals("killall")
+                    || first.equals("list") || first.equals("help")) {
+                return Collections.emptyList();
             }
-            return filter(Arrays.asList("spawn", "kill", "remove", "tp", "status", "hand", "look"), args[1]);
+            return filter(PLAYER_ACTION_SUGGEST, args[1]);
         }
-        if (args.length == 3 && is(args[1], "spawn")) {
-            return filter(unique(suggestableNamesWith(args[0])), args[2]);
+        // Skin position for spawn/skin only.
+        if (args.length == 3) {
+            String action = args[1].toLowerCase(Locale.ROOT);
+            if (action.equals("spawn") || action.equals("skin")) {
+                return filter(unique(suggestableNames()), args[2]);
+            }
         }
         return Collections.emptyList();
     }
@@ -2852,12 +3375,6 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         }
         out.addAll(learnedNames);
         out.addAll(DEFAULT_NAME_SUGGESTIONS);
-        return out;
-    }
-
-    private List<String> suggestableNamesWith(String name) {
-        List<String> out = suggestableNames();
-        out.add(sanitizeName(name));
         return out;
     }
 
