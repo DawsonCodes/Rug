@@ -1,0 +1,29 @@
+name: Rug
+main: com.dawsoncodes.rug.Rug
+version: 0.2.10-nms-alpha11
+author: DawsonCodes
+description: Paper Carpet-inspired no-dependency technical testing plugin with NMS fake-player alpha11. © DawsonCodes.
+api-version: '26.1'
+commands:
+  rug:
+    description: Main Rug command hub.
+    usage: /rug help
+    permission: rug.use
+    aliases: [r]
+permissions:
+  rug.use:
+    description: Allows Rug commands.
+    default: op
+  rug.admin:
+    description: Allows Rug admin/config commands.
+    default: op
+  rug.player:
+    description: Allows Rug fake-player commands.
+    default: op
+  rug.*:
+    description: Allows every Rug command.
+    default: op
+    children:
+      rug.use: true
+      rug.admin: true
+      rug.player: true

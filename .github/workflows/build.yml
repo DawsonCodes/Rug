@@ -1,0 +1,31 @@
+name: Build Rug
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Build with Maven
+        run: mvn -B --no-transfer-progress package
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: rug-jar
+          path: target/Rug-*.jar
+          if-no-files-found: error

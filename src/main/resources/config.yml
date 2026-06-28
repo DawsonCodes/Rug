@@ -1,0 +1,39 @@
+rules:
+  # auto = try real NMS ServerPlayer first, then fallback. nms = force real player. visual = safe armor stand/head fallback.
+  playerBackend: auto
+
+  # Spawns the visible player-looking dummy. This is an armor stand wearing a player head.
+  playerVisualEnabled: true
+
+  # Uses the fake player's name as the player-head owner/skin where Bukkit can resolve it.
+  playerHeadEnabled: true
+
+  # Spawns a hidden damageable zombie hitbox so the dummy can be shot/hit and cleaned up.
+  hitboxEnabled: true
+
+  # Keeps the zombie hitbox hidden so only the player-looking visual shows.
+  hitboxInvisible: true
+
+  # Stops the hidden hitbox from burning in daylight.
+  hitboxFireProof: true
+
+  # Sends fake-player death + leave-server chat lines.
+  broadcastDeaths: true
+  sendQuitMessage: true
+
+  # Options: none, wither, guardian, dragon, hurt
+  # Spawn is silent now. Death uses normal-pitch wither by default.
+  summonAlertSound: none
+  deathAlertSound: wither
+
+
+  # False = protect real online players from duplicate-name fake players.
+  # True = allow risky Carpet-style duplicate name tests. Commands may get weird if a real player and fake player share one name.
+  allowDuplicateOnlineNames: false
+
+  # Fake-player skin layer mask. all enables cape/jacket/sleeves/pants/hat. none hides outer layers.
+  # You can also use comma lists like cape,jacket,sleeves,pants,hat.
+  skinLayers: all
+
+  # Extra fake-player knockback applied when you punch/hit them. 0 disables it.
+  punchKnockback: 0.55
