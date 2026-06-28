@@ -2,10 +2,15 @@ rules:
   # auto = try real NMS ServerPlayer first, then fallback. nms = force real player. visual = safe armor stand/head fallback.
   playerBackend: auto
 
+  # false = clean, single-line spawn output (default). true = extra backend/skin
+  # detail in chat and a few expected-situation notes in the console.
+  verboseMessages: false
+
   # Spawns the visible player-looking dummy. This is an armor stand wearing a player head.
   playerVisualEnabled: true
 
-  # Uses the fake player's name as the player-head owner/skin where Bukkit can resolve it.
+  # Visual backend wears a player head. Rug tries the requested/resolved skin
+  # texture first, then the named owner, then a clean default head.
   playerHeadEnabled: true
 
   # Spawns a hidden damageable zombie hitbox so the dummy can be shot/hit and cleaned up.
