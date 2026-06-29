@@ -26,10 +26,19 @@ rules:
   broadcastDeaths: true
   sendQuitMessage: true
 
-  # Options: none, wither, guardian, dragon, hurt
-  # Spawn is silent now. Death uses normal-pitch wither by default.
-  summonAlertSound: none
+  # true = fake players keep their items on death (no drops).
+  # false = drop inventory/armor/offhand like a normal survival death (default).
+  keepInventory: false
+
+  # Death sound played to everyone when a fake player dies. Wither is the default.
+  # Pick any catalog sound here or in the GUI (Rules -> death sound menu). Options:
+  # none, wither, wither_death, guardian, dragon, dragon_death, hurt, death, totem,
+  # levelup, anvil, bell, explode, creeper, thunder, ghast, villager_no, raid_horn,
+  # pling, bass, exp
   deathAlertSound: wither
+
+  # Sound on the visual-backend spawn (none by default). Same options as above.
+  summonAlertSound: none
 
 
   # False = protect real online players from duplicate-name fake players.

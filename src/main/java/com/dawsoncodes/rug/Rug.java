@@ -2,9 +2,11 @@ package com.dawsoncodes.rug;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.NamespacedKey;
 import org.bukkit.Sound;
 import org.bukkit.SoundCategory;
 import org.bukkit.Material;
+import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -15,8 +17,10 @@ import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.entity.EntityCombustEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
+import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
@@ -25,8 +29,11 @@ import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.util.Vector;
 
 import java.lang.reflect.Array;
@@ -55,7 +62,7 @@ import java.util.Set;
 import java.util.UUID;
 
 public final class Rug extends JavaPlugin implements CommandExecutor, TabCompleter, Listener {
-    private static final String VERSION = "0.2.11-nms-alpha12";
+    private static final String VERSION = "0.2.12-nms-alpha13";
     private static final String COPYRIGHT = "\u00A9 2026 DawsonCodes";
     private static final char COLOR = '\u00A7';
     private static final String DISPLAY_NAME = COLOR + "6Rug Engine";
@@ -66,6 +73,8 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
     private static final String GUI_DETAIL_TITLE = COLOR + "6Rug Bot Details";
     private static final String GUI_CLEANUP_TITLE = COLOR + "6Rug Cleanup";
     private static final String GUI_SKIN_TITLE = COLOR + "6Rug Skin Tools";
+    private static final String GUI_INV_TITLE = COLOR + "6Rug Inventory";
+    private static final String GUI_SOUND_TITLE = COLOR + "6Rug Death Sound";
     private static final long SKIN_CACHE_OK_MS = 60L * 60L * 1000L;
     private static final long SKIN_CACHE_FAIL_MS = 10L * 60L * 1000L;
 
@@ -91,7 +100,7 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
     );
     private static final List<String> RULES = Arrays.asList(
             "playerBackend", "verboseMessages", "skinLayers", "punchKnockback", "allowDuplicateOnlineNames",
-            "broadcastDeaths", "sendQuitMessage", "deathAlertSound", "summonAlertSound",
+            "broadcastDeaths", "sendQuitMessage", "keepInventory", "deathAlertSound", "summonAlertSound",
             "playerVisualEnabled", "playerHeadEnabled", "hitboxEnabled", "hitboxInvisible", "hitboxFireProof"
     );
     // Short, human-readable descriptions shown by /rug rules.
@@ -106,6 +115,7 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         map.put("allowDuplicateOnlineNames", "allow risky duplicate names of real players");
         map.put("broadcastDeaths", "broadcast a fake-player death line");
         map.put("sendQuitMessage", "broadcast a fake-player leave line after death/removal");
+        map.put("keepInventory", "true = fake players keep items on death (no drops)");
         map.put("deathAlertSound", "sound on fake death: none/wither/guardian/dragon/hurt");
         map.put("summonAlertSound", "sound on visual-backend spawn (none by default)");
         map.put("playerVisualEnabled", "visual backend spawns a player-look armor stand");
@@ -114,6 +124,35 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         map.put("hitboxInvisible", "keep the visual-backend hitbox invisible");
         map.put("hitboxFireProof", "stop the visual-backend hitbox burning in daylight");
         return map;
+    }
+
+    /** Pick-and-choose death sound catalog. Wither stays the default. */
+    private static final List<SoundOption> DEATH_SOUNDS = buildDeathSounds();
+
+    private static List<SoundOption> buildDeathSounds() {
+        List<SoundOption> list = new ArrayList<SoundOption>();
+        list.add(new SoundOption("none", "No sound", Material.BARRIER, new String[]{}));
+        list.add(new SoundOption("wither", "Wither spawn (default)", Material.WITHER_SKELETON_SKULL, new String[]{"ENTITY_WITHER_SPAWN", "WITHER_SPAWN"}));
+        list.add(new SoundOption("wither_death", "Wither death", Material.WITHER_ROSE, new String[]{"ENTITY_WITHER_DEATH"}));
+        list.add(new SoundOption("guardian", "Elder guardian", Material.PRISMARINE_SHARD, new String[]{"ENTITY_ELDER_GUARDIAN_CURSE"}));
+        list.add(new SoundOption("dragon", "Dragon growl", Material.DRAGON_HEAD, new String[]{"ENTITY_ENDER_DRAGON_GROWL"}));
+        list.add(new SoundOption("dragon_death", "Dragon death", Material.DRAGON_EGG, new String[]{"ENTITY_ENDER_DRAGON_DEATH"}));
+        list.add(new SoundOption("hurt", "Player hurt", Material.REDSTONE, new String[]{"ENTITY_PLAYER_HURT"}));
+        list.add(new SoundOption("death", "Player death", Material.SKELETON_SKULL, new String[]{"ENTITY_PLAYER_DEATH"}));
+        list.add(new SoundOption("totem", "Totem use", Material.TOTEM_OF_UNDYING, new String[]{"ITEM_TOTEM_USE"}));
+        list.add(new SoundOption("levelup", "Level up", Material.EXPERIENCE_BOTTLE, new String[]{"ENTITY_PLAYER_LEVELUP"}));
+        list.add(new SoundOption("anvil", "Anvil land", Material.ANVIL, new String[]{"BLOCK_ANVIL_LAND"}));
+        list.add(new SoundOption("bell", "Bell", Material.BELL, new String[]{"BLOCK_BELL_USE"}));
+        list.add(new SoundOption("explode", "Explosion", Material.TNT, new String[]{"ENTITY_GENERIC_EXPLODE", "ENTITY_GENERIC_EXPLODE"}));
+        list.add(new SoundOption("creeper", "Creeper hiss", Material.CREEPER_HEAD, new String[]{"ENTITY_CREEPER_PRIMED"}));
+        list.add(new SoundOption("thunder", "Thunder", Material.LIGHTNING_ROD, new String[]{"ENTITY_LIGHTNING_BOLT_THUNDER"}));
+        list.add(new SoundOption("ghast", "Ghast scream", Material.GHAST_TEAR, new String[]{"ENTITY_GHAST_SCREAM"}));
+        list.add(new SoundOption("villager_no", "Villager no", Material.EMERALD, new String[]{"ENTITY_VILLAGER_NO"}));
+        list.add(new SoundOption("raid_horn", "Raid horn", Material.GOAT_HORN, new String[]{"EVENT_RAID_HORN"}));
+        list.add(new SoundOption("pling", "Note pling", Material.NOTE_BLOCK, new String[]{"BLOCK_NOTE_BLOCK_PLING"}));
+        list.add(new SoundOption("bass", "Note bass", Material.NOTE_BLOCK, new String[]{"BLOCK_NOTE_BLOCK_BASS"}));
+        list.add(new SoundOption("exp", "Experience pickup", Material.EXPERIENCE_BOTTLE, new String[]{"ENTITY_EXPERIENCE_ORB_PICKUP"}));
+        return list;
     }
     // Generic, neutral default fake-player names only. No real or personal names.
     private static final String DEFAULT_NAME = "RugBot";
@@ -127,9 +166,12 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
     private final Map<String, Long> skinCacheTime = new LinkedHashMap<>();
     private final Set<String> learnedNames = new LinkedHashSet<>();
     // GUI context: which fake player a viewer's detail page is bound to, and
-    // which fake player's live inventory a viewer currently has open.
+    // which fake player's inventory a viewer currently has open in the editor.
     private final Map<UUID, String> guiBotName = new LinkedHashMap<>();
     private final Map<UUID, String> invEditing = new LinkedHashMap<>();
+    // Death is handled exactly once per fake-player UUID, even across the lethal
+    // damage interceptor, a vanilla death fallback, and multiple cleanup passes.
+    private final Set<UUID> deathHandled = new LinkedHashSet<>();
 
     /** Verbose/debug chat + console output. Off by default for clean spawns. */
     private boolean verbose() {
@@ -140,6 +182,16 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         if (sender != null && verbose()) {
             sender.sendMessage(message);
         }
+    }
+
+    /** PDC key marking GUI placeholder items so they never get written into a fake's inventory. */
+    private NamespacedKey placeholderKey() {
+        return new NamespacedKey(this, "slot_placeholder");
+    }
+
+    /** Deterministic UUID a fake player spawns under (matches the NMS spawn path). */
+    private static UUID fakeUuid(String name) {
+        return UUID.nameUUIDFromBytes(("Rug:" + sanitizeName(name)).getBytes(StandardCharsets.UTF_8));
     }
 
     private String trackKey(String rawName) {
@@ -487,51 +539,210 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         sender.sendMessage(COLOR + "e/rug player purge " + COLOR + "8| " + COLOR + "e removeall " + COLOR + "8- " + COLOR + "7clean up stuck / all bots");
     }
 
-    /**
-     * Opens the fake player's live inventory to the command sender so items can be
-     * viewed/edited. Editing the live inventory avoids item duplication. Guards
-     * against dead/removed/visual-backend fakes so it never crashes.
-     */
     private boolean openFakeInventory(CommandSender sender, String rawName) {
+        return openFakeInventory(sender, rawName, true);
+    }
+
+    /**
+     * Opens an editor GUI showing the fake player's main inventory, hotbar, armor,
+     * and off-hand. Edits are written back to the fake on close (no duplication),
+     * and it never acts on a dead/removed/visual-backend fake.
+     */
+    private boolean openFakeInventory(CommandSender sender, String rawName, boolean announce) {
         if (!(sender instanceof Player)) {
             sender.sendMessage(PREFIX + "Run this in-game to open a fake player's inventory.");
             return true;
         }
         Player viewer = (Player) sender;
         String name = sanitizeName(rawName);
-        FakeHandle fake = getTracked(name);
-        Player target = null;
-        if (fake != null && fake.bukkitPlayer instanceof Player) {
-            target = (Player) fake.bukkitPlayer;
-        } else {
-            Player online = findOnlinePlayerIgnoreCase(name);
-            if (online != null && isLikelyFakeOnlinePlayer(online)) {
-                target = online;
-            }
-        }
+        Player target = liveFakePlayer(name);
         if (target == null) {
             sender.sendMessage(PREFIX + COLOR + "cNo live (NMS) fake player named " + COLOR + "e" + name + COLOR + "c to open. Visual-backend bots have no inventory.");
             return true;
         }
         try {
-            boolean dead = false;
-            try { Object d = invokeFlexible(target, "isDead"); dead = Boolean.TRUE.equals(d); } catch (Throwable ignored) {}
-            if (dead || hasTag(target, REMOVING_TAG)) {
+            if (isFakeDeadOrRemoving(target)) {
                 sender.sendMessage(PREFIX + COLOR + "c" + name + " is dead/removing; nothing to open.");
                 return true;
             }
-            Inventory inv = (Inventory) invokeFlexible(target, "getInventory");
-            if (inv == null) {
-                sender.sendMessage(PREFIX + COLOR + "cCould not read " + name + "'s inventory.");
-                return true;
-            }
-            viewer.openInventory(inv);
+            Inventory editor = buildInventoryEditor(target);
             invEditing.put(viewer.getUniqueId(), name);
-            sender.sendMessage(PREFIX + "Editing " + COLOR + "e" + name + COLOR + "7's inventory. Close to apply + refresh.");
+            viewer.openInventory(editor);
+            if (announce) {
+                sender.sendMessage(PREFIX + "Editing " + COLOR + "e" + name + COLOR + "7's inventory. Close or click Back to apply.");
+            }
         } catch (Throwable throwable) {
             sender.sendMessage(PREFIX + COLOR + "cCould not open inventory: " + safeText(rootMessage(throwable)));
         }
         return true;
+    }
+
+    private Player liveFakePlayer(String name) {
+        FakeHandle fake = getTracked(name);
+        if (fake != null && fake.bukkitPlayer instanceof Player) {
+            return (Player) fake.bukkitPlayer;
+        }
+        Player online = findOnlinePlayerIgnoreCase(name);
+        if (online != null && isLikelyFakeOnlinePlayer(online)) {
+            return online;
+        }
+        return null;
+    }
+
+    private boolean isFakeDeadOrRemoving(Player target) {
+        try {
+            Object dead = invokeFlexible(target, "isDead");
+            if (Boolean.TRUE.equals(dead)) return true;
+        } catch (Throwable ignored) {
+        }
+        return hasTag(target, REMOVING_TAG);
+    }
+
+    // Editor layout (54 slots): 0-26 main storage, 27-35 hotbar,
+    // 36 helmet, 37 chestplate, 38 leggings, 39 boots, 40 off-hand,
+    // 41-52 filler, 53 Back.
+    private Inventory buildInventoryEditor(Player target) throws Exception {
+        Inventory editor = (Inventory) createInventoryReflect(54, GUI_INV_TITLE);
+        PlayerInventory inv = target.getInventory();
+        for (int i = 9; i <= 35; i++) {
+            try { editor.setItem(i - 9, inv.getItem(i)); } catch (Throwable ignored) {}
+        }
+        for (int i = 0; i <= 8; i++) {
+            try { editor.setItem(27 + i, inv.getItem(i)); } catch (Throwable ignored) {}
+        }
+        editor.setItem(36, armorOrLabel(safeArmor(inv, "getHelmet"), "Helmet", Material.LEATHER_HELMET));
+        editor.setItem(37, armorOrLabel(safeArmor(inv, "getChestplate"), "Chestplate", Material.LEATHER_CHESTPLATE));
+        editor.setItem(38, armorOrLabel(safeArmor(inv, "getLeggings"), "Leggings", Material.LEATHER_LEGGINGS));
+        editor.setItem(39, armorOrLabel(safeArmor(inv, "getBoots"), "Boots", Material.LEATHER_BOOTS));
+        ItemStack offhand = null;
+        try { offhand = inv.getItemInOffHand(); } catch (Throwable ignored) {}
+        editor.setItem(40, armorOrLabel(offhand, "Off-hand", Material.SHIELD));
+        ItemStack filler = fillerPane();
+        for (int i = 41; i <= 52; i++) editor.setItem(i, filler);
+        editor.setItem(53, slotButton(Material.ARROW, COLOR + "eBack", Arrays.asList(COLOR + "7Apply changes and go back.")));
+        return editor;
+    }
+
+    private ItemStack safeArmor(PlayerInventory inv, String getter) {
+        try { return (ItemStack) invokeFlexible(inv, getter); } catch (Throwable ignored) { return null; }
+    }
+
+    private ItemStack armorOrLabel(ItemStack current, String slotName, Material icon) {
+        if (!isEmptyItem(current)) return current;
+        return slotButton(icon, COLOR + "b" + slotName + " slot",
+                Arrays.asList(COLOR + "8Empty — drop a " + slotName.toLowerCase(Locale.ROOT) + " item here."));
+    }
+
+    private ItemStack fillerPane() {
+        return slotButton(Material.GRAY_STAINED_GLASS_PANE, COLOR + "8", Collections.<String>emptyList());
+    }
+
+    /** A non-editable GUI item marked with the placeholder PDC key (never written back). */
+    private ItemStack slotButton(Material material, String name, List<String> lore) {
+        ItemStack item = new ItemStack(material, 1);
+        try {
+            ItemMeta meta = item.getItemMeta();
+            if (meta != null) {
+                meta.setDisplayName(name);
+                if (lore != null && !lore.isEmpty()) meta.setLore(lore);
+                hideItemDetails(meta);
+                try { meta.getPersistentDataContainer().set(placeholderKey(), PersistentDataType.BYTE, (byte) 1); } catch (Throwable ignored) {}
+                item.setItemMeta(meta);
+            }
+        } catch (Throwable ignored) {
+        }
+        return item;
+    }
+
+    private boolean isPlaceholder(ItemStack item) {
+        if (item == null) return false;
+        try {
+            ItemMeta meta = item.getItemMeta();
+            return meta != null && meta.getPersistentDataContainer().has(placeholderKey(), PersistentDataType.BYTE);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private ItemStack contentOrNull(ItemStack item) {
+        if (isEmptyItem(item) || isPlaceholder(item)) return null;
+        return item;
+    }
+
+    /** Writes editor contents back into the fake's real inventory. No duplication. */
+    private void applyInventoryEditor(Player target, Inventory editor) {
+        if (target == null || editor == null) return;
+        try {
+            PlayerInventory inv = target.getInventory();
+            for (int i = 0; i <= 26; i++) {
+                try { inv.setItem(9 + i, contentOrNull(editor.getItem(i))); } catch (Throwable ignored) {}
+            }
+            for (int i = 0; i <= 8; i++) {
+                try { inv.setItem(i, contentOrNull(editor.getItem(27 + i))); } catch (Throwable ignored) {}
+            }
+            try { inv.setHelmet(contentOrNull(editor.getItem(36))); } catch (Throwable ignored) {}
+            try { inv.setChestplate(contentOrNull(editor.getItem(37))); } catch (Throwable ignored) {}
+            try { inv.setLeggings(contentOrNull(editor.getItem(38))); } catch (Throwable ignored) {}
+            try { inv.setBoots(contentOrNull(editor.getItem(39))); } catch (Throwable ignored) {}
+            try { inv.setItemInOffHand(contentOrNull(editor.getItem(40))); } catch (Throwable ignored) {}
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * Handles clicks inside the inventory editor. Content slots (main/hotbar) and
+     * the player's own inventory stay editable; filler/Back are cancelled; armor
+     * and off-hand slots accept items but never hand out the label placeholders.
+     */
+    private void handleInventoryEditorClick(InventoryClickEvent event, Player player) {
+        int raw = event.getRawSlot();
+        if (raw < 0 || raw >= 54) {
+            return; // player's own inventory: allow normal editing
+        }
+        if (raw == 53) { // Back
+            event.setCancelled(true);
+            closeInventoryEditor(player, true);
+            return;
+        }
+        if (raw >= 41 && raw <= 52) { // filler
+            event.setCancelled(true);
+            return;
+        }
+        if (raw >= 36 && raw <= 40) { // armor / off-hand
+            ItemStack current = event.getCurrentItem();
+            if (isPlaceholder(current)) {
+                event.setCancelled(true);
+                ItemStack cursor = event.getCursor();
+                if (!isEmptyItem(cursor)) {
+                    ItemStack place = cursor.clone();
+                    place.setAmount(1);
+                    event.getInventory().setItem(raw, place);
+                    ItemStack left = cursor.clone();
+                    left.setAmount(cursor.getAmount() - 1);
+                    player.setItemOnCursor(left.getAmount() <= 0 ? null : left);
+                }
+                return;
+            }
+            return; // real item: allow normal pick up / swap
+        }
+        // main storage / hotbar content: allow normal editing
+    }
+
+    /** Applies edits, refreshes equipment, and returns to the bot detail page. */
+    private void closeInventoryEditor(Player player, boolean openDetail) {
+        String name = invEditing.remove(player.getUniqueId());
+        if (name != null) {
+            Player target = liveFakePlayer(name);
+            if (target != null) {
+                applyInventoryEditor(target, player.getOpenInventory().getTopInventory());
+                refreshFakePlayerEquipment(target);
+            }
+        }
+        if (openDetail && name != null) {
+            openDetailGui(player, name);
+        } else if (openDetail) {
+            openPlayersGui(player);
+        }
     }
 
     private boolean spawn(CommandSender sender, String rawName, String rawSkinName) {
@@ -565,6 +776,8 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
 
         purgeName(name, true);
         removeFake(sender, name, false, false);
+        // Fresh spawn under this name can die again later.
+        deathHandled.remove(fakeUuid(name));
 
         Location base = ((Player) sender).getLocation();
         Object visual = null;
@@ -686,23 +899,14 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
     private void killFake(CommandSender sender, String rawName) {
         String name = sanitizeName(rawName);
         FakeHandle fake = getTracked(name);
-        if (fake != null && "nms".equalsIgnoreCase(fake.backend) && fake.bukkitPlayer instanceof Entity) {
-            Entity entity = (Entity) fake.bukkitPlayer;
-            try {
-                if (sender instanceof Player) {
-                    Method damage = entity.getClass().getMethod("damage", double.class, Entity.class);
-                    damage.invoke(entity, 10000.0d, (Player) sender);
-                } else {
-                    Method damage = entity.getClass().getMethod("damage", double.class);
-                    damage.invoke(entity, 10000.0d);
-                }
-                sender.sendMessage(PREFIX + "Killed " + COLOR + "e" + name + COLOR + "7 using the vanilla damage path.");
-                return;
-            } catch (Throwable ignored) {
-                invokeIfExists(entity, "setHealth", new Class[]{double.class}, 0.0d);
-                sender.sendMessage(PREFIX + "Killed " + COLOR + "e" + name + COLOR + "7 using fallback health=0.");
-                return;
-            }
+        if (fake != null && "nms".equalsIgnoreCase(fake.backend) && fake.bukkitPlayer instanceof Player) {
+            // Deterministic death: message once, drop inventory, then fully remove
+            // the fake from the world + player list so it actually leaves the
+            // server instead of getting stuck as a dead body.
+            Player killer = sender instanceof Player ? (Player) sender : null;
+            killFakeNow((Player) fake.bukkitPlayer, name, killer == null ? null : killer.getName());
+            sender.sendMessage(PREFIX + "Killed " + COLOR + "e" + name + COLOR + "7; it dropped its items and left the server.");
+            return;
         }
         removeFake(sender, name, true, true);
     }
@@ -2176,8 +2380,8 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
                     COLOR + "7/rug player <name> spawn [skin]",
                     COLOR + "7/rug rules",
                     COLOR + "8Click for version/backend info."));
+            // Navigation is silent: no "GUI opened" chat spam.
             player.openInventory(inv);
-            player.sendMessage(PREFIX + "Opened the Rug control GUI.");
         } catch (Throwable throwable) {
             player.sendMessage(PREFIX + COLOR + "cGUI failed: " + safeText(rootMessage(throwable)));
             showRules(player);
@@ -2318,6 +2522,29 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         }
     }
 
+    /** Death-sound picker: choose any catalog sound for deathAlertSound. */
+    private void openSoundGui(Player player) {
+        try {
+            Inventory inv = (Inventory) createInventoryReflect(54, GUI_SOUND_TITLE);
+            fillGui(inv);
+            String current = ruleText("deathAlertSound", "wither").toLowerCase(Locale.ROOT);
+            int slot = 0;
+            for (SoundOption option : DEATH_SOUNDS) {
+                if (slot >= 45) break;
+                boolean selected = option.key.equals(current);
+                List<String> lore = new ArrayList<String>();
+                lore.add(COLOR + "7Sets " + COLOR + "fdeathAlertSound " + COLOR + "7= " + COLOR + "e" + option.key);
+                lore.add(selected ? COLOR + "aSelected" : COLOR + "8Click to select + preview");
+                putGuiItem(inv, slot, option.icon, (selected ? COLOR + "a" : COLOR + "e") + option.label, lore);
+                slot++;
+            }
+            putGuiItem(inv, 49, Material.ARROW, COLOR + "eBack", Arrays.asList(COLOR + "7Return to the Rules page."));
+            player.openInventory(inv);
+        } catch (Throwable throwable) {
+            player.sendMessage(PREFIX + COLOR + "cGUI failed: " + safeText(rootMessage(throwable)));
+        }
+    }
+
     private Object createInventoryReflect(int size, String title) throws Exception {
         for (Method method : Bukkit.class.getMethods()) {
             if (!method.getName().equals("createInventory")) continue;
@@ -2356,9 +2583,22 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
             if (meta != null) {
                 meta.setDisplayName(name);
                 meta.setLore(lore);
+                hideItemDetails(meta);
                 item.setItemMeta(meta);
             }
             inv.setItem(slot, item);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * Hides vanilla item tooltips (attack damage, attributes, enchants, etc.) so
+     * GUI buttons only show Rug's own display name + lore.
+     */
+    private void hideItemDetails(ItemMeta meta) {
+        if (meta == null) return;
+        try {
+            meta.addItemFlags(ItemFlag.values());
         } catch (Throwable ignored) {
         }
     }
@@ -2371,6 +2611,7 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
             if (meta != null) {
                 try { invokeFlexible(meta, "setDisplayName", name); } catch (Throwable ignored) {}
                 try { invokeFlexible(meta, "setLore", lore); } catch (Throwable ignored) {}
+                if (meta instanceof ItemMeta) hideItemDetails((ItemMeta) meta);
                 try { invokeFlexible(item, "setItemMeta", meta); } catch (Throwable ignored) {}
             }
             return item;
@@ -2384,12 +2625,20 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         try {
             String title = String.valueOf(event.getView().getTitle());
             boolean ours = title.equals(GUI_TITLE) || title.equals(GUI_RULES_TITLE) || title.equals(GUI_PLAYERS_TITLE)
-                    || title.equals(GUI_DETAIL_TITLE) || title.equals(GUI_CLEANUP_TITLE) || title.equals(GUI_SKIN_TITLE);
+                    || title.equals(GUI_DETAIL_TITLE) || title.equals(GUI_CLEANUP_TITLE) || title.equals(GUI_SKIN_TITLE)
+                    || title.equals(GUI_INV_TITLE) || title.equals(GUI_SOUND_TITLE);
             if (!ours) return;
-            event.setCancelled(true);
             Object who = event.getWhoClicked();
             if (!(who instanceof Player)) return;
             Player player = (Player) who;
+
+            // The inventory editor is partly editable, so it must NOT be blanket-cancelled.
+            if (title.equals(GUI_INV_TITLE)) {
+                handleInventoryEditorClick(event, player);
+                return;
+            }
+
+            event.setCancelled(true);
             int slot = event.getRawSlot();
 
             if (title.equals(GUI_TITLE)) {
@@ -2438,10 +2687,24 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
                 return;
             }
 
+            if (title.equals(GUI_SOUND_TITLE)) {
+                if (slot == 49) { openRulesGui(player); return; }
+                if (slot >= 0 && slot < DEATH_SOUNDS.size() && slot < 45) {
+                    SoundOption option = DEATH_SOUNDS.get(slot);
+                    getConfig().set("rules.deathAlertSound", option.key);
+                    saveConfig();
+                    previewSoundTo(player, option.key);
+                    openSoundGui(player);
+                }
+                return;
+            }
+
             // Rules page.
             if (slot == 49) { openMainGui(player); return; }
             String rule = ruleFromGuiSlot(slot);
             if (rule == null) return;
+            // The death sound has its own pick-and-choose menu instead of a cycle.
+            if ("deathAlertSound".equals(rule)) { openSoundGui(player); return; }
             cycleGuiRule(rule);
             player.sendMessage(PREFIX + "Set " + COLOR + "e" + rule + COLOR + "7 to " + COLOR + "e" + ruleText(rule, "?") + COLOR + "7.");
             openRulesGui(player);
@@ -2456,7 +2719,7 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
             case 10: killFake(player, name); player.closeInventory(); break;
             case 11: removeFake(player, name, true, false); openPlayersGui(player); break;
             case 12: refreshFakeHand(player, name); break;
-            case 13: openFakeInventory(player, name); break;
+            case 13: openFakeInventory(player, name, false); break;
             case 14: teleportToFake(player, name); player.closeInventory(); break;
             case 15: moveHere(player, name, null); break;
             case 16: player.sendMessage(PREFIX + "Use " + COLOR + "f/rug player " + name + " skin <skinName>" + COLOR + "7 to change its skin."); break;
@@ -2512,15 +2775,12 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
             Player player = (Player) who;
             String name = invEditing.remove(player.getUniqueId());
             if (name == null) return;
-            // Apply edits by re-syncing the fake's held item / equipment.
-            FakeHandle fake = getTracked(name);
-            if (fake != null) {
-                syncFakeEquipment(fake);
-            } else {
-                Player online = findOnlinePlayerIgnoreCase(name);
-                if (online != null && isLikelyFakeOnlinePlayer(online)) {
-                    refreshFakePlayerEquipment(online);
-                }
+            // Write the editor contents back into the fake's real inventory, then
+            // refresh held item / equipment. Guarded so a dead/removed fake is a no-op.
+            Player target = liveFakePlayer(name);
+            if (target != null && !isFakeDeadOrRemoving(target)) {
+                try { applyInventoryEditor(target, event.getInventory()); } catch (Throwable ignored) {}
+                refreshFakePlayerEquipment(target);
             }
         } catch (Throwable ignored) {
         }
@@ -2603,13 +2863,19 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         }
     }
 
-    @EventHandler
+    @EventHandler(ignoreCancelled = true)
     public void onFakePlayerDamaged(EntityDamageByEntityEvent event) {
         try {
             Entity victim = event.getEntity();
             if (!isRugFakeEntity(victim)) return;
             Entity attacker = event.getDamager();
             if (attacker == null) return;
+            // The lethal-damage interceptor already cancelled this if it was a
+            // killing blow, but guard anyway so we never knock back a dying fake.
+            if (victim instanceof Player) {
+                try { if (((Player) victim).getHealth() <= event.getFinalDamage()) return; } catch (Throwable ignored) {}
+            }
+            if (hasTag(victim, REMOVING_TAG)) return;
             double kb = ruleDouble("punchKnockback", 0.55d);
             if (kb <= 0.0d) return;
             Location vLoc = victim.getLocation();
@@ -2759,8 +3025,11 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
 
     private void manuallyPickupNearbyItems(Player fake) {
         if (fake == null || !isNmsFakeEntity(fake)) return;
+        if (hasTag(fake, REMOVING_TAG)) return;
         try {
-            Object nearby = invokeFlexible(fake, "getNearbyEntities", Double.valueOf(1.6d), Double.valueOf(1.2d), Double.valueOf(1.6d));
+            // Tighter, roughly vanilla pickup reach so items aren't vacuumed from
+            // a wide area. Real players only grab items about a block away.
+            Object nearby = invokeFlexible(fake, "getNearbyEntities", Double.valueOf(1.0d), Double.valueOf(0.8d), Double.valueOf(1.0d));
             if (!(nearby instanceof Iterable)) return;
             boolean changed = false;
             for (Object entity : new ArrayList<Object>((Collection<?>) nearby)) {
@@ -2774,6 +3043,12 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
                     isItem = "DROPPED_ITEM".equalsIgnoreCase(typeName) || "ITEM".equalsIgnoreCase(typeName);
                 }
                 if (!isItem) continue;
+                // Respect the item's pickup delay so freshly dropped/thrown items
+                // aren't snatched instantly; this is what makes pickup feel normal.
+                try {
+                    Object delay = invokeFlexible(entity, "getPickupDelay");
+                    if (delay instanceof Number && ((Number) delay).intValue() > 0) continue;
+                } catch (Throwable ignored) {}
                 Object stack = null;
                 try { stack = invokeFlexible(entity, "getItemStack"); } catch (Throwable ignored) {}
                 if (stack == null || isEmptyItem(stack)) continue;
@@ -3084,11 +3359,134 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
     }
 
     /**
-     * Real NMS fake players fire {@link PlayerDeathEvent}, not the generic
-     * {@link EntityDeathEvent}. Without this handler the vanilla death message
-     * still appeared but the body/corpse was never cleaned up. We let Paper
-     * broadcast the death line, then fully remove the fake player so nothing is
-     * left lying on the ground.
+     * Clientless NMS fake players do not reliably complete a vanilla death: the
+     * ServerPlayer can get stuck as a dead body that never leaves the player
+     * list. So we intercept the lethal hit ourselves and run a deterministic
+     * death — message once, drop the inventory once, then fully remove the fake
+     * (player list + world + client packets) so it actually leaves the server.
+     */
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    public void onFakeLethalDamage(EntityDamageEvent event) {
+        try {
+            Entity victim = event.getEntity();
+            if (!(victim instanceof Player) || !isNmsFakeEntity(victim)) return;
+            Player fake = (Player) victim;
+            if (hasTag(fake, REMOVING_TAG)) {
+                // Already dying/removing: never let a stuck body take more damage ticks.
+                event.setCancelled(true);
+                return;
+            }
+            double health;
+            try { health = fake.getHealth(); } catch (Throwable t) { return; }
+            if (event.getFinalDamage() < health) {
+                return; // survivable hit; leave it to the knockback handler
+            }
+            // Lethal: take over the whole death so it can't get stuck.
+            event.setCancelled(true);
+            String killer = null;
+            if (event instanceof EntityDamageByEntityEvent) {
+                Entity damager = ((EntityDamageByEntityEvent) event).getDamager();
+                if (damager instanceof Player) killer = ((Player) damager).getName();
+                else if (damager != null) { try { killer = String.valueOf(damager.getName()); } catch (Throwable ignored) {} }
+            }
+            killFakeNow(fake, nameFromEntityOrTags(fake), killer);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * Deterministic fake-player death used by the lethal-damage interceptor and
+     * by {@code /rug player <name> kill}. Runs exactly once per fake UUID.
+     */
+    private void killFakeNow(Player fake, String name, String killer) {
+        if (fake == null) return;
+        UUID id = fake.getUniqueId();
+        if (id == null) id = fakeUuid(name);
+        if (!deathHandled.add(id)) return; // already handled this death
+        scheduleGuardClear(id);
+        invokeIfExists(fake, "addScoreboardTag", new Class[]{String.class}, REMOVING_TAG);
+        broadcastFakeDeathLine(name, killer);
+        dropFakeInventory(fake);
+        finishFakeDeath(name, fake);
+    }
+
+    /**
+     * Shared post-death finish: sound, full removal across several ticks, registry
+     * update, and a clean leave line only after the body is gone.
+     */
+    private void finishFakeDeath(String name, Entity entity) {
+        invokeIfExists(entity, "addScoreboardTag", new Class[]{String.class}, REMOVING_TAG);
+        playConfiguredSound("deathAlertSound", 1.0f, 1.0f);
+        FakeHandle handle = getTracked(name);
+        scheduleNmsRemoval(name, entity, handle);
+        untrack(name);
+        if (ruleBool("sendQuitMessage", true)) {
+            final String quitName = name;
+            // Leave line lands just after the death line, once the fake is leaving.
+            runLater(new Runnable() {
+                @Override
+                public void run() {
+                    broadcastFakeQuit(quitName);
+                }
+            }, 3L);
+        }
+    }
+
+    /**
+     * Drops a fake player's inventory like a normal survival death: storage,
+     * hotbar, armor, and offhand, naturally at the death location. Snapshots and
+     * clears before dropping so nothing duplicates. Respects keepInventory.
+     */
+    private void dropFakeInventory(Player fake) {
+        try {
+            if (ruleBool("keepInventory", false)) return;
+            Location loc = fake.getLocation();
+            World world = loc == null ? null : loc.getWorld();
+            if (world == null) return;
+            PlayerInventory inv;
+            try { inv = fake.getInventory(); } catch (Throwable t) { return; }
+            if (inv == null) return;
+
+            List<ItemStack> drops = new ArrayList<ItemStack>();
+            ItemStack[] storage;
+            try { storage = inv.getStorageContents(); } catch (Throwable t) { storage = inv.getContents(); }
+            if (storage != null) {
+                for (ItemStack item : storage) if (!isEmptyItem(item)) drops.add(item);
+            }
+            ItemStack[] armor = null;
+            try { armor = inv.getArmorContents(); } catch (Throwable ignored) {}
+            if (armor != null) {
+                for (ItemStack item : armor) if (!isEmptyItem(item)) drops.add(item);
+            }
+            ItemStack offhand = null;
+            try { offhand = inv.getItemInOffHand(); } catch (Throwable ignored) {}
+            if (!isEmptyItem(offhand)) drops.add(offhand);
+
+            // Clear first so the items only exist as ground drops (no duplication).
+            try { inv.clear(); } catch (Throwable ignored) {}
+            try { inv.setArmorContents(null); } catch (Throwable ignored) {}
+            try { inv.setItemInOffHand(null); } catch (Throwable ignored) {}
+
+            for (ItemStack item : drops) {
+                try { world.dropItemNaturally(loc, item); } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void scheduleGuardClear(final UUID id) {
+        runLater(new Runnable() {
+            @Override
+            public void run() {
+                deathHandled.remove(id);
+            }
+        }, 100L);
+    }
+
+    /**
+     * Fallback for deaths we did not intercept (e.g. {@code /kill} or void damage
+     * that bypassed the damage event). Drops once, respecting keepInventory, then
+     * finishes the same removal/leave flow.
      */
     @EventHandler
     public void onPlayerDeath(PlayerDeathEvent event) {
@@ -3096,37 +3494,37 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         if (entity == null || !isNmsFakeEntity(entity)) {
             return;
         }
-        if (hasTag(entity, REMOVING_TAG)) {
-            return;
-        }
-        // Don't scatter the fake's gear and don't keep its body/inventory around.
-        try {
-            event.getDrops().clear();
-        } catch (Throwable ignored) {
-        }
+        boolean keep = ruleBool("keepInventory", false);
         invokeIfExists(event, "setDroppedExp", new Class[]{int.class}, 0);
-        invokeIfExists(event, "setKeepInventory", new Class[]{boolean.class}, false);
+        invokeIfExists(event, "setKeepInventory", new Class[]{boolean.class}, keep);
         invokeIfExists(event, "setKeepLevel", new Class[]{boolean.class}, false);
-        invokeIfExists(entity, "addScoreboardTag", new Class[]{String.class}, REMOVING_TAG);
 
-        final String name = nameFromEntityOrTags(entity);
-        FakeHandle dyingFake = getTracked(name);
-        // Delayed removal so the vanilla death message broadcasts first, then the
-        // PlayerList/world/tracking cleanup removes the corpse cleanly.
-        scheduleNmsRemoval(name, entity, dyingFake);
-        untrack(name);
-        // A clientless fake never produces its own vanilla "left the game" line,
-        // which is why leave behaviour looked broken. Emit one clean leave line
-        // just after the death message instead of relying on the disconnect path.
-        if (ruleBool("sendQuitMessage", true)) {
-            runLater(new Runnable() {
-                @Override
-                public void run() {
-                    broadcastFakeQuit(name);
-                }
-            }, 3L);
+        UUID id = entity.getUniqueId();
+        if (id != null && deathHandled.contains(id)) {
+            // We already dropped manually via killFakeNow; don't double-drop.
+            try { event.getDrops().clear(); } catch (Throwable ignored) {}
+        } else {
+            if (id != null) { deathHandled.add(id); scheduleGuardClear(id); }
+            if (keep) {
+                try { event.getDrops().clear(); } catch (Throwable ignored) {}
+            } else {
+                // Re-drop manually so a clientless death still spawns items reliably.
+                try {
+                    List<ItemStack> snapshot = new ArrayList<ItemStack>(event.getDrops());
+                    event.getDrops().clear();
+                    Location loc = entity.getLocation();
+                    World world = loc == null ? null : loc.getWorld();
+                    if (world != null) {
+                        for (ItemStack item : snapshot) {
+                            if (!isEmptyItem(item)) {
+                                try { world.dropItemNaturally(loc, item); } catch (Throwable ignored) {}
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) {}
+            }
         }
-        playConfiguredSound("deathAlertSound", 1.0f, 1.0f);
+        finishFakeDeath(nameFromEntityOrTags(entity), entity);
     }
 
     @EventHandler
@@ -3217,7 +3615,8 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         invokeIfExists(event, "setDroppedExp", new Class[]{int.class}, 0);
     }
 
-    private void broadcastFakeDeath(String name, String killer) {
+    /** Just the death line (used by the deterministic death path). */
+    private void broadcastFakeDeathLine(String name, String killer) {
         if (!ruleBool("broadcastDeaths", true)) {
             return;
         }
@@ -3227,6 +3626,11 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         for (Player player : onlinePlayers()) {
             player.sendMessage(deathLine);
         }
+    }
+
+    /** Death line + leave line (used by the visual-backend death path). */
+    private void broadcastFakeDeath(String name, String killer) {
+        broadcastFakeDeathLine(name, killer);
         if (ruleBool("sendQuitMessage", true)) {
             broadcastFakeQuit(name);
         }
@@ -3269,6 +3673,7 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
             return;
         }
         Sound sound = soundFromConfig(wanted);
+        if (sound == null) return;
         for (Player player : onlinePlayers()) {
             try {
                 Location location = player.getLocation();
@@ -3278,21 +3683,46 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         }
     }
 
+    private void previewSoundTo(Player player, String key) {
+        Sound sound = soundFromConfig(key);
+        if (sound == null) return;
+        try { player.playSound(player.getLocation(), sound, SoundCategory.MASTER, 1.0f, 1.0f); } catch (Throwable ignored) {}
+    }
+
+    /**
+     * Resolves a friendly sound key to a Bukkit {@link Sound} via reflection on
+     * the catalog's candidate field names. Reflection keeps it compile-safe across
+     * Paper versions even if a particular constant is renamed or missing.
+     */
     private Sound soundFromConfig(String wanted) {
-        if (wanted == null) {
-            return Sound.ENTITY_WITHER_SPAWN;
-        }
+        if (wanted == null) return defaultDeathSound();
         String key = wanted.toLowerCase(Locale.ROOT).trim();
-        if (key.equals("guardian") || key.equals("elder_guardian")) {
-            return Sound.ENTITY_ELDER_GUARDIAN_CURSE;
+        if (key.equals("none") || key.equals("off") || key.equals("false")) return null;
+        for (SoundOption option : DEATH_SOUNDS) {
+            if (option.key.equals(key)) {
+                Sound resolved = resolveSoundByNames(option.fieldNames);
+                return resolved != null ? resolved : defaultDeathSound();
+            }
         }
-        if (key.equals("dragon") || key.equals("ender_dragon")) {
-            return Sound.ENTITY_ENDER_DRAGON_GROWL;
+        // Unknown key: try it directly as a Sound field name, else default.
+        Sound direct = resolveSoundByNames(new String[]{key.toUpperCase(Locale.ROOT)});
+        return direct != null ? direct : defaultDeathSound();
+    }
+
+    private Sound defaultDeathSound() {
+        return resolveSoundByNames(new String[]{"ENTITY_WITHER_SPAWN", "WITHER_SPAWN"});
+    }
+
+    private Sound resolveSoundByNames(String[] fieldNames) {
+        for (String fieldName : fieldNames) {
+            try {
+                Field field = Sound.class.getField(fieldName);
+                Object value = field.get(null);
+                if (value instanceof Sound) return (Sound) value;
+            } catch (Throwable ignored) {
+            }
         }
-        if (key.equals("hurt") || key.equals("player_hurt")) {
-            return Sound.ENTITY_PLAYER_HURT;
-        }
-        return Sound.ENTITY_WITHER_SPAWN;
+        return null;
     }
 
     @Override
@@ -3685,6 +4115,20 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
 
     private static String shortId(UUID uuid) {
         return uuid == null ? "none" : uuid.toString().substring(0, 8);
+    }
+
+    private static final class SoundOption {
+        final String key;
+        final String label;
+        final Material icon;
+        final String[] fieldNames;
+
+        SoundOption(String key, String label, Material icon, String[] fieldNames) {
+            this.key = key;
+            this.label = label;
+            this.icon = icon;
+            this.fieldNames = fieldNames;
+        }
     }
 
     private static final class ParsedPlayerCommand {

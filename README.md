@@ -4,7 +4,7 @@ A no-dependency Paper plugin that spawns Carpet-style **fake players** using ref
 NMS/`ServerPlayer` access, plus a small set of Carpet-inspired rules. Everything lives under
 a single `/rug` command hub and an in-game chest GUI.
 
-- **Version:** `v0.2.11-nms-alpha12`
+- **Version:** `v0.2.12-nms-alpha13`
 - **Target:** Paper `26.1.x` (built/tested on `26.1.2`), Java `25+`
 - **Runtime dependencies:** none. The Paper API is only a `provided` Maven dependency.
 - **No** CommandAPI, ProtocolLib, Citizens, or packet libraries are used.
@@ -18,7 +18,8 @@ a single `/rug` command hub and an in-game chest GUI.
 1. Build the jar (see below) or grab `Rug-<version>.jar` from your build output.
 2. Drop the jar into your server's `plugins/` folder.
 3. Start the server on Paper `26.1.x` (Java 25+).
-4. Manage everything with `/rug` (alias: `/r`).
+4. Manage everything with `/rug`. (There is intentionally no `/r` alias — it
+   clashes with common reply/PM commands; `/rug` is the only command.)
 
 ## Build
 
@@ -35,14 +36,14 @@ CI builds the same way on GitHub Actions (`.github/workflows/build.yml`) using T
 
 Releases are automated by `.github/workflows/release.yml`:
 
-1. Push a version tag like `v0.2.11-nms-alpha12` (tags matching `v*`).
+1. Push a version tag like `v0.2.12-nms-alpha13` (tags matching `v*`).
 2. GitHub Actions builds the plugin and attaches the jar (named `Rug-<tag>.jar`,
-   e.g. `Rug-v0.2.11-nms-alpha12.jar`) to a GitHub Release for that tag automatically.
+   e.g. `Rug-v0.2.12-nms-alpha13.jar`) to a GitHub Release for that tag automatically.
 3. Tags containing `alpha`, `beta`, or `rc` are published as **prereleases**; any other `v*` tag is a full release.
 
 ```bash
-git tag v0.2.11-nms-alpha12
-git push origin v0.2.11-nms-alpha12
+git tag v0.2.12-nms-alpha13
+git push origin v0.2.12-nms-alpha13
 ```
 
 The workflow uses the built-in `GITHUB_TOKEN` and the official `gh release create`, so no third-party
@@ -79,7 +80,7 @@ Unknown actions show help and **never** spawn anything.
 | `/rug player <name> remove` | Quietly remove it |
 | `/rug player <name> hand` | Force-refresh its held item / equipment |
 | `/rug player <name> status` | Show backend / skin / tracking info |
-| `/rug player <name> inventory` | Open its live inventory to view/edit (no item duplication) |
+| `/rug player <name> inventory` | Open an editor for its main inventory, hotbar, armor, and off-hand (no item duplication) |
 | `/rug player <name> skin <skinName>` | Re-spawn it in place with a new skin |
 | `/rug player <name> tp` | Move it to you |
 | `/rug player removeall` | Remove all tracked fake players |
@@ -110,16 +111,20 @@ the truncated name it actually spawned, and commands/tab-completion resolve that
   showing state (alive/dead), backend, skin, and location. Click a head to open
   a **detail page** with: Kill, Remove, Refresh hand, Open inventory, Teleport to
   it, Bring it to you, and Change-skin instructions.
-- **Rules** – a toggle page; click boolean rules to flip them, and click
-  `punchKnockback` / `skinLayers` / `playerBackend` / `deathAlertSound` to cycle presets
+- **Rules** – a toggle page; click boolean rules to flip them, click
+  `punchKnockback` / `skinLayers` / `playerBackend` to cycle presets, and click
+  `deathAlertSound` to open a **death-sound picker** with ~20 sounds (wither is
+  the default) that previews each one when selected
 - **Skin / Profile Tools** – skincheck yourself, cycle skin layers, and skin-change instructions
 - **Cleanup / Purge** – buttons to purge stuck/dead bots, remove all bots, and refresh the registry
 - **Help / About** – version and command help
 
-The inventory editor opens the fake player's **live** inventory, so edits apply
-directly without duplicating items, and it is guarded so it never acts on a
-dead/removed fake. All chat commands still work, so technical users can skip the
-GUI entirely.
+The inventory editor shows the fake player's **main inventory, hotbar, armor, and
+off-hand** with labelled empty slots. Edits are written back to the fake on close
+(or via the Back button) without duplicating items, and it is guarded so it never
+acts on a dead/removed fake. GUI navigation is silent and GUI buttons hide vanilla
+item stats (no stray "attack damage" tooltips). All chat commands still work, so
+technical users can skip the GUI entirely.
 
 ## Rules
 
@@ -128,9 +133,11 @@ or the Rules GUI page. Highlights:
 
 - `playerBackend` – `auto` (try real NMS, fall back to visual), `nms`, or `visual`
 - `verboseMessages` – `false` (clean, one-line spawns) or `true` (extra detail)
+- `keepInventory` – `false` drops a fake's items on death (default), `true` keeps them
 - `punchKnockback` – how far a punched fake player slides (`0` disables)
 - `skinLayers` – `all`, `none`, or a comma list like `cape,jacket,sleeves,pants,hat`
 - `broadcastDeaths` / `sendQuitMessage` – fake death/leave chat lines
+- `deathAlertSound` – death sound key (see the GUI picker); `summonAlertSound` for visual spawns
 - `allowDuplicateOnlineNames` – allow risky duplicate names with real online players
 
 ## Skins and capes
@@ -151,15 +158,15 @@ A single-file plugin today; the package split into `command/`, `fakeplayer/`,
 `nms/`, `gui/`, `rules/`, `skin/`, and `util/` is planned for the next refactor.
 
 ```text
-src/main/java/com/dawsoncodes/rug/Rug.java   ~3,780 lines
+src/main/java/com/dawsoncodes/rug/Rug.java   ~4,230 lines
 src/main/resources/plugin.yml
 src/main/resources/config.yml
 ```
 
 Approximate Java LOC:
 
-- `Rug.java`: ~3,780
-- Total Java LOC: ~3,780
+- `Rug.java`: ~4,230
+- Total Java LOC: ~4,230
 
 Refresh the count any time with:
 
@@ -175,8 +182,11 @@ find src -name '*.java' -print0 | xargs -0 wc -l
 - Skin lookups can be rate-limited by Mojang (HTTP 429). Rug caches skins for the session,
   reuses the cache, and falls back to the default skin instead of spamming logs. Skin/rate-limit
   notices only appear when `verboseMessages` is on.
-- On death, Rug clears the fake's drops and removes it from the player list, world, and
-  client view (via player-info-remove and remove-entity packets) so no corpse is left behind.
+- On death (or `/rug player <name> kill`), Rug intercepts the lethal hit, shows the death
+  message once, drops the fake's inventory/armor/off-hand like a normal survival death
+  (unless `keepInventory` is set), then fully removes it from the world, player list, and
+  client view (player-info-remove + remove-entity packets) and emits a clean leave line —
+  so the fake actually leaves the server instead of getting stuck as a corpse.
 
 ---
 
