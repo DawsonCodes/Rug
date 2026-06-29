@@ -25,10 +25,13 @@ import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerAttemptPickupItemEvent;
+import org.bukkit.event.inventory.InventoryAction;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
@@ -62,7 +65,7 @@ import java.util.Set;
 import java.util.UUID;
 
 public final class Rug extends JavaPlugin implements CommandExecutor, TabCompleter, Listener {
-    private static final String VERSION = "0.2.12-nms-alpha13";
+    private static final String VERSION = "0.2.13-nms-alpha14";
     private static final String COPYRIGHT = "\u00A9 2026 DawsonCodes";
     private static final char COLOR = '\u00A7';
     private static final String DISPLAY_NAME = COLOR + "6Rug Engine";
@@ -543,10 +546,17 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         return openFakeInventory(sender, rawName, true);
     }
 
+    // Editor layout (54 slots): 0-26 main storage, 27-35 hotbar, 36 helmet,
+    // 37 chestplate, 38 leggings, 39 boots, 40 off-hand (all EDITABLE, mapped to
+    // real fake-player slots), 41-52 filler, 53 Back (GUI-ONLY, never saved).
+    private static boolean isEditorContentSlot(int raw) { return raw >= 0 && raw <= 35; }
+    private static boolean isEditorArmorSlot(int raw) { return raw >= 36 && raw <= 40; }
+    private static boolean isEditorEditable(int raw) { return raw >= 0 && raw <= 40; }
+
     /**
      * Opens an editor GUI showing the fake player's main inventory, hotbar, armor,
-     * and off-hand. Edits are written back to the fake on close (no duplication),
-     * and it never acts on a dead/removed/visual-backend fake.
+     * and off-hand. Only the real mapped slots are written back on close (no GUI
+     * buttons can ever leak into the fake), and it never acts on a dead/removed fake.
      */
     private boolean openFakeInventory(CommandSender sender, String rawName, boolean announce) {
         if (!(sender instanceof Player)) {
@@ -565,7 +575,7 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
                 sender.sendMessage(PREFIX + COLOR + "c" + name + " is dead/removing; nothing to open.");
                 return true;
             }
-            Inventory editor = buildInventoryEditor(target);
+            Inventory editor = buildInventoryEditor(target, name);
             invEditing.put(viewer.getUniqueId(), name);
             viewer.openInventory(editor);
             if (announce) {
@@ -598,11 +608,10 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         return hasTag(target, REMOVING_TAG);
     }
 
-    // Editor layout (54 slots): 0-26 main storage, 27-35 hotbar,
-    // 36 helmet, 37 chestplate, 38 leggings, 39 boots, 40 off-hand,
-    // 41-52 filler, 53 Back.
-    private Inventory buildInventoryEditor(Player target) throws Exception {
-        Inventory editor = (Inventory) createInventoryReflect(54, GUI_INV_TITLE);
+    private Inventory buildInventoryEditor(Player target, String name) throws Exception {
+        RugInvHolder holder = new RugInvHolder(name);
+        Inventory editor = createHeldInventory(holder, 54, GUI_INV_TITLE);
+        holder.inventory = editor;
         PlayerInventory inv = target.getInventory();
         for (int i = 9; i <= 35; i++) {
             try { editor.setItem(i - 9, inv.getItem(i)); } catch (Throwable ignored) {}
@@ -610,13 +619,13 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         for (int i = 0; i <= 8; i++) {
             try { editor.setItem(27 + i, inv.getItem(i)); } catch (Throwable ignored) {}
         }
-        editor.setItem(36, armorOrLabel(safeArmor(inv, "getHelmet"), "Helmet", Material.LEATHER_HELMET));
-        editor.setItem(37, armorOrLabel(safeArmor(inv, "getChestplate"), "Chestplate", Material.LEATHER_CHESTPLATE));
-        editor.setItem(38, armorOrLabel(safeArmor(inv, "getLeggings"), "Leggings", Material.LEATHER_LEGGINGS));
-        editor.setItem(39, armorOrLabel(safeArmor(inv, "getBoots"), "Boots", Material.LEATHER_BOOTS));
+        editor.setItem(36, armorOrLabel(safeArmor(inv, "getHelmet"), 36));
+        editor.setItem(37, armorOrLabel(safeArmor(inv, "getChestplate"), 37));
+        editor.setItem(38, armorOrLabel(safeArmor(inv, "getLeggings"), 38));
+        editor.setItem(39, armorOrLabel(safeArmor(inv, "getBoots"), 39));
         ItemStack offhand = null;
         try { offhand = inv.getItemInOffHand(); } catch (Throwable ignored) {}
-        editor.setItem(40, armorOrLabel(offhand, "Off-hand", Material.SHIELD));
+        editor.setItem(40, armorOrLabel(offhand, 40));
         ItemStack filler = fillerPane();
         for (int i = 41; i <= 52; i++) editor.setItem(i, filler);
         editor.setItem(53, slotButton(Material.ARROW, COLOR + "eBack", Arrays.asList(COLOR + "7Apply changes and go back.")));
@@ -627,10 +636,19 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         try { return (ItemStack) invokeFlexible(inv, getter); } catch (Throwable ignored) { return null; }
     }
 
-    private ItemStack armorOrLabel(ItemStack current, String slotName, Material icon) {
+    private ItemStack armorOrLabel(ItemStack current, int editorSlot) {
         if (!isEmptyItem(current)) return current;
-        return slotButton(icon, COLOR + "b" + slotName + " slot",
-                Arrays.asList(COLOR + "8Empty — drop a " + slotName.toLowerCase(Locale.ROOT) + " item here."));
+        return editorSlotPlaceholder(editorSlot);
+    }
+
+    private ItemStack editorSlotPlaceholder(int editorSlot) {
+        switch (editorSlot) {
+            case 36: return slotButton(Material.LEATHER_HELMET, COLOR + "bHelmet slot", Arrays.asList(COLOR + "8Empty — place a helmet here."));
+            case 37: return slotButton(Material.LEATHER_CHESTPLATE, COLOR + "bChestplate slot", Arrays.asList(COLOR + "8Empty — place a chestplate/elytra here."));
+            case 38: return slotButton(Material.LEATHER_LEGGINGS, COLOR + "bLeggings slot", Arrays.asList(COLOR + "8Empty — place leggings here."));
+            case 39: return slotButton(Material.LEATHER_BOOTS, COLOR + "bBoots slot", Arrays.asList(COLOR + "8Empty — place boots here."));
+            default: return slotButton(Material.SHIELD, COLOR + "bOff-hand slot", Arrays.asList(COLOR + "8Empty — place an off-hand item here."));
+        }
     }
 
     private ItemStack fillerPane() {
@@ -669,7 +687,24 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         return item;
     }
 
-    /** Writes editor contents back into the fake's real inventory. No duplication. */
+    /** Validates that an item is allowed in a given editor armor/off-hand slot. */
+    private boolean validForEditorSlot(ItemStack item, int editorSlot) {
+        if (isEmptyItem(item) || isPlaceholder(item)) return true;
+        String type = item.getType().name();
+        switch (editorSlot) {
+            case 36: return type.endsWith("_HELMET") || type.equals("PLAYER_HEAD") || type.equals("CARVED_PUMPKIN") || type.equals("TURTLE_HELMET");
+            case 37: return type.endsWith("_CHESTPLATE") || type.equals("ELYTRA");
+            case 38: return type.endsWith("_LEGGINGS");
+            case 39: return type.endsWith("_BOOTS");
+            default: return true; // off-hand accepts anything
+        }
+    }
+
+    /**
+     * Writes editor contents back into the fake's real inventory. Reads ONLY the
+     * mapped editable slots (0-40) and skips any GUI placeholder, so GUI buttons
+     * can never end up in the fake's inventory or drops.
+     */
     private void applyInventoryEditor(Player target, Inventory editor) {
         if (target == null || editor == null) return;
         try {
@@ -690,42 +725,140 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
     }
 
     /**
-     * Handles clicks inside the inventory editor. Content slots (main/hotbar) and
-     * the player's own inventory stay editable; filler/Back are cancelled; armor
-     * and off-hand slots accept items but never hand out the label placeholders.
+     * Handles every editor click type so GUI buttons can never be taken and armor
+     * slots only accept valid items. Filler/Back are cancelled; armor/off-hand are
+     * handled manually with validation; content slots stay normally editable.
      */
-    private void handleInventoryEditorClick(InventoryClickEvent event, Player player) {
+    private void handleInventoryEditorClick(InventoryClickEvent event, Player player, RugInvHolder holder) {
+        int topSize = event.getView().getTopInventory().getSize();
         int raw = event.getRawSlot();
-        if (raw < 0 || raw >= 54) {
-            return; // player's own inventory: allow normal editing
-        }
-        if (raw == 53) { // Back
-            event.setCancelled(true);
-            closeInventoryEditor(player, true);
-            return;
-        }
-        if (raw >= 41 && raw <= 52) { // filler
+        InventoryAction action = event.getAction();
+
+        // Double-click collect can rake items across GUI-only slots — disable it.
+        if (action == InventoryAction.COLLECT_TO_CURSOR) {
             event.setCancelled(true);
             return;
         }
-        if (raw >= 36 && raw <= 40) { // armor / off-hand
-            ItemStack current = event.getCurrentItem();
-            if (isPlaceholder(current)) {
+
+        boolean clickTop = raw >= 0 && raw < topSize;
+
+        // Number-key / hotbar swap targets the clicked slot.
+        if (action == InventoryAction.HOTBAR_SWAP || action == InventoryAction.HOTBAR_MOVE_AND_READD) {
+            if (clickTop && !isEditorEditable(raw)) { event.setCancelled(true); return; }
+            if (clickTop && isEditorArmorSlot(raw)) {
                 event.setCancelled(true);
-                ItemStack cursor = event.getCursor();
-                if (!isEmptyItem(cursor)) {
-                    ItemStack place = cursor.clone();
-                    place.setAmount(1);
-                    event.getInventory().setItem(raw, place);
-                    ItemStack left = cursor.clone();
-                    left.setAmount(cursor.getAmount() - 1);
-                    player.setItemOnCursor(left.getAmount() <= 0 ? null : left);
+                ItemStack incoming = player.getInventory().getItem(event.getHotbarButton());
+                if (!isEmptyItem(incoming) && validForEditorSlot(incoming, raw)) {
+                    swapEditorArmor(event, player, holder, raw, incoming, event.getHotbarButton());
                 }
                 return;
             }
-            return; // real item: allow normal pick up / swap
+            return; // content slot swap: fine
         }
-        // main storage / hotbar content: allow normal editing
+
+        // Shift-click (move to other inventory).
+        if (event.isShiftClick()) {
+            if (clickTop) {
+                if (!isEditorEditable(raw)) { event.setCancelled(true); return; }       // GUI-only
+                if (isEditorArmorSlot(raw) && isPlaceholder(event.getCurrentItem())) { event.setCancelled(true); return; }
+                return; // real item leaving an editable slot: fine
+            }
+            // bottom -> top: armor/GUI slots are occupied (placeholders/filler) so
+            // vanilla skips them and only fills empty content slots. Safe.
+            return;
+        }
+
+        // GUI-only top slots: cancel; the Back button navigates.
+        if (clickTop && !isEditorEditable(raw)) {
+            event.setCancelled(true);
+            if (raw == 53) closeInventoryEditor(player, true);
+            return;
+        }
+
+        // Armor / off-hand: manual + validated.
+        if (clickTop && isEditorArmorSlot(raw)) {
+            handleArmorSlotClick(event, player, holder, raw);
+            return;
+        }
+
+        // Content slots (main/hotbar) and the player's own inventory: normal editing.
+    }
+
+    private void handleArmorSlotClick(InventoryClickEvent event, Player player, RugInvHolder holder, int raw) {
+        event.setCancelled(true);
+        Inventory top = event.getView().getTopInventory();
+        ItemStack cur = top.getItem(raw);
+        boolean curReal = !isEmptyItem(cur) && !isPlaceholder(cur);
+        ItemStack cursor = event.getCursor();
+
+        if (isEmptyItem(cursor)) {
+            if (curReal) {
+                player.setItemOnCursor(cur);
+                top.setItem(raw, editorSlotPlaceholder(raw)); // restore label
+            }
+            // placeholder + empty cursor: nothing to take
+        } else {
+            if (!validForEditorSlot(cursor, raw)) {
+                return; // reject invalid item; it stays on the cursor
+            }
+            ItemStack place = cursor.clone();
+            place.setAmount(1);
+            if (curReal) {
+                player.setItemOnCursor(cur); // swap real armor back to cursor
+            } else {
+                ItemStack left = cursor.clone();
+                left.setAmount(cursor.getAmount() - 1);
+                player.setItemOnCursor(left.getAmount() <= 0 ? null : left);
+            }
+            top.setItem(raw, place);
+        }
+        liveApplyArmor(holder, raw, top.getItem(raw));
+    }
+
+    private void swapEditorArmor(InventoryClickEvent event, Player player, RugInvHolder holder, int raw, ItemStack incoming, int hotbarButton) {
+        Inventory top = event.getView().getTopInventory();
+        ItemStack cur = top.getItem(raw);
+        boolean curReal = !isEmptyItem(cur) && !isPlaceholder(cur);
+        // Put the incoming hotbar item into the armor slot; return the old item to the hotbar.
+        top.setItem(raw, incoming.clone());
+        player.getInventory().setItem(hotbarButton, curReal ? cur : null);
+        liveApplyArmor(holder, raw, incoming);
+    }
+
+    /** Immediately applies one armor/off-hand slot to the fake and refreshes its appearance. */
+    private void liveApplyArmor(RugInvHolder holder, int editorSlot, ItemStack item) {
+        try {
+            Player target = liveFakePlayer(holder.fakeName);
+            if (target == null || isFakeDeadOrRemoving(target)) return;
+            ItemStack real = contentOrNull(item);
+            PlayerInventory inv = target.getInventory();
+            switch (editorSlot) {
+                case 36: inv.setHelmet(real); break;
+                case 37: inv.setChestplate(real); break;
+                case 38: inv.setLeggings(real); break;
+                case 39: inv.setBoots(real); break;
+                default: inv.setItemInOffHand(real); break;
+            }
+            broadcastAllEquipment(target);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    @EventHandler
+    public void onRugInvDrag(InventoryDragEvent event) {
+        try {
+            if (!(event.getInventory().getHolder() instanceof RugInvHolder)) return;
+            int topSize = event.getView().getTopInventory().getSize();
+            for (Object slotObj : event.getRawSlots()) {
+                int raw = ((Integer) slotObj).intValue();
+                if (raw < topSize && !isEditorContentSlot(raw)) {
+                    // Drag touched a GUI-only or armor slot: block it entirely.
+                    event.setCancelled(true);
+                    return;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     /** Applies edits, refreshes equipment, and returns to the bot detail page. */
@@ -736,6 +869,7 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
             if (target != null) {
                 applyInventoryEditor(target, player.getOpenInventory().getTopInventory());
                 refreshFakePlayerEquipment(target);
+                broadcastAllEquipment(target);
             }
         }
         if (openDetail && name != null) {
@@ -900,12 +1034,11 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         String name = sanitizeName(rawName);
         FakeHandle fake = getTracked(name);
         if (fake != null && "nms".equalsIgnoreCase(fake.backend) && fake.bukkitPlayer instanceof Player) {
-            // Deterministic death: message once, drop inventory, then fully remove
-            // the fake from the world + player list so it actually leaves the
-            // server instead of getting stuck as a dead body.
-            Player killer = sender instanceof Player ? (Player) sender : null;
-            killFakeNow((Player) fake.bukkitPlayer, name, killer == null ? null : killer.getName());
-            sender.sendMessage(PREFIX + "Killed " + COLOR + "e" + name + COLOR + "7; it dropped its items and left the server.");
+            // Deterministic death: one basic "<name> died" message, drop inventory,
+            // then fully remove the fake from the world + player list so it actually
+            // leaves the server instead of getting stuck as a dead body.
+            killFakeNow((Player) fake.bukkitPlayer, name, null);
+            sendVerbose(sender, PREFIX + "Killed " + COLOR + "e" + name + COLOR + "7; dropped items and left.");
             return;
         }
         removeFake(sender, name, true, true);
@@ -2557,6 +2690,15 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         throw new NoSuchMethodError("Bukkit.createInventory(holder,int,String)");
     }
 
+    /** Creates an inventory backed by the given holder (so getHolder() identifies it). */
+    private Inventory createHeldInventory(InventoryHolder holder, int size, String title) {
+        try {
+            return Bukkit.createInventory(holder, size, title);
+        } catch (Throwable ignored) {
+            try { return (Inventory) createInventoryReflect(size, title); } catch (Throwable t) { return null; }
+        }
+    }
+
     private void fillGui(Inventory inv) {
         try {
             Object filler = makeNamedItem("GRAY_STAINED_GLASS_PANE", COLOR + "8", Collections.<String>emptyList());
@@ -2623,20 +2765,23 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
     @EventHandler
     public void onRulesGuiClick(InventoryClickEvent event) {
         try {
-            String title = String.valueOf(event.getView().getTitle());
-            boolean ours = title.equals(GUI_TITLE) || title.equals(GUI_RULES_TITLE) || title.equals(GUI_PLAYERS_TITLE)
-                    || title.equals(GUI_DETAIL_TITLE) || title.equals(GUI_CLEANUP_TITLE) || title.equals(GUI_SKIN_TITLE)
-                    || title.equals(GUI_INV_TITLE) || title.equals(GUI_SOUND_TITLE);
-            if (!ours) return;
             Object who = event.getWhoClicked();
             if (!(who instanceof Player)) return;
             Player player = (Player) who;
 
-            // The inventory editor is partly editable, so it must NOT be blanket-cancelled.
-            if (title.equals(GUI_INV_TITLE)) {
-                handleInventoryEditorClick(event, player);
+            // The inventory editor is identified by its holder (not its title) and
+            // is partly editable, so it must NOT be blanket-cancelled.
+            InventoryHolder topHolder = event.getView().getTopInventory().getHolder();
+            if (topHolder instanceof RugInvHolder) {
+                handleInventoryEditorClick(event, player, (RugInvHolder) topHolder);
                 return;
             }
+
+            String title = String.valueOf(event.getView().getTitle());
+            boolean ours = title.equals(GUI_TITLE) || title.equals(GUI_RULES_TITLE) || title.equals(GUI_PLAYERS_TITLE)
+                    || title.equals(GUI_DETAIL_TITLE) || title.equals(GUI_CLEANUP_TITLE) || title.equals(GUI_SKIN_TITLE)
+                    || title.equals(GUI_SOUND_TITLE);
+            if (!ours) return;
 
             event.setCancelled(true);
             int slot = event.getRawSlot();
@@ -2775,12 +2920,15 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
             Player player = (Player) who;
             String name = invEditing.remove(player.getUniqueId());
             if (name == null) return;
-            // Write the editor contents back into the fake's real inventory, then
-            // refresh held item / equipment. Guarded so a dead/removed fake is a no-op.
+            // Only write back if the closed inventory is actually a Rug editor.
+            if (!(event.getInventory().getHolder() instanceof RugInvHolder)) return;
+            // Write the editor's mapped slots into the fake's real inventory, then
+            // refresh equipment. Guarded so a dead/removed fake is a no-op.
             Player target = liveFakePlayer(name);
             if (target != null && !isFakeDeadOrRemoving(target)) {
                 try { applyInventoryEditor(target, event.getInventory()); } catch (Throwable ignored) {}
                 refreshFakePlayerEquipment(target);
+                broadcastAllEquipment(target);
             }
         } catch (Throwable ignored) {
         }
@@ -2917,7 +3065,8 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
                 : null;
         setNmsDeltaMovement(nms, horizontal.getX(), 0.4d, horizontal.getZ());
         broadcastMotionPacket(victim, nms, horizontal);
-        final double[] decay = {0.7d, 0.5d, 0.34d, 0.22d, 0.12d, 0.06d};
+        // Larger first steps so the slide is clearly visible to real players.
+        final double[] decay = {1.0d, 0.8d, 0.6d, 0.4d, 0.25d, 0.12d};
         for (int i = 0; i < decay.length; i++) {
             final double factor = decay[i];
             runLater(new Runnable() {
@@ -2967,7 +3116,53 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
     }
 
     private static double clampSlide(double value) {
-        return Math.max(-1.1d, Math.min(1.1d, value));
+        return Math.max(-1.5d, Math.min(1.5d, value));
+    }
+
+    /**
+     * Forces every real viewer to see the fake's new position. A clientless
+     * player's tracker doesn't always broadcast position changes, so we send an
+     * explicit teleport/position-sync packet after moving it.
+     */
+    private void broadcastEntityTeleport(Object nms) {
+        if (nms == null) return;
+        try {
+            Object packet = constructTeleportPacket(nms);
+            if (packet == null) return;
+            for (Player viewer : onlinePlayers()) {
+                if (isLikelyFakeOnlinePlayer(viewer)) continue;
+                sendPacket(viewer, packet);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private Object constructTeleportPacket(Object nms) {
+        // Newer Paper: ClientboundEntityPositionSyncPacket.of(Entity)
+        try {
+            Class<?> pktClass = Class.forName("net.minecraft.network.protocol.game.ClientboundEntityPositionSyncPacket");
+            for (Method m : pktClass.getMethods()) {
+                if (Modifier.isStatic(m.getModifiers()) && m.getName().equals("of")
+                        && m.getParameterCount() == 1 && m.getParameterTypes()[0].isInstance(nms)) {
+                    m.setAccessible(true);
+                    return m.invoke(null, nms);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        // Older: ClientboundTeleportEntityPacket(Entity)
+        try {
+            Class<?> pktClass = Class.forName("net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket");
+            for (Constructor<?> c : pktClass.getDeclaredConstructors()) {
+                Class<?>[] t = c.getParameterTypes();
+                if (t.length == 1 && t[0].isInstance(nms)) {
+                    c.setAccessible(true);
+                    return c.newInstance(nms);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
     }
 
     private void broadcastMotionPacket(Entity victim, Object nms, Vector horizontal) {
@@ -3021,6 +3216,8 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
             invokeIfExists(nms, "setPos", new Class[]{double.class, double.class, double.class}, x, y, z);
         }
         try { victim.teleport(loc); } catch (Throwable ignored) {}
+        // Force viewers to see the move even if the fake's tracker stays quiet.
+        broadcastEntityTeleport(nms);
     }
 
     private void manuallyPickupNearbyItems(Player fake) {
@@ -3056,9 +3253,25 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
                     try { invokeFlexible(entity, "remove"); } catch (Throwable ignored) {}
                     changed = true;
                 }
+                // If the inventory is full, storeItemInFakeInventory returns false
+                // and we leave the item in the world.
             }
             if (changed) {
+                playPickupSound(fake);
                 refreshFakePlayerEquipment(fake);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void playPickupSound(Player fake) {
+        try {
+            Sound sound = resolveSoundByNames(new String[]{"ENTITY_ITEM_PICKUP", "ITEM_PICKUP"});
+            if (sound == null) return;
+            Location loc = fake.getLocation();
+            for (Player viewer : onlinePlayers()) {
+                if (isLikelyFakeOnlinePlayer(viewer)) continue;
+                try { viewer.playSound(loc, sound, SoundCategory.PLAYERS, 0.3f, 1.6f); } catch (Throwable ignored) {}
             }
         } catch (Throwable ignored) {
         }
@@ -3271,11 +3484,20 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
     }
 
     private Object equipmentSlotMainHand() {
+        return equipmentSlotByName("MAINHAND");
+    }
+
+    private Object equipmentSlotByName(String name) {
         try {
             Class<?> slotClass = firstClass("net.minecraft.world.entity.EnumItemSlot", "net.minecraft.world.entity.EquipmentSlot");
-            try { return Enum.valueOf((Class<? extends Enum>) slotClass.asSubclass(Enum.class), "MAINHAND"); } catch (Throwable ignored) {}
-            String[] fieldNames = {"MAINHAND", "a", "HAND"};
-            for (String fieldName : fieldNames) {
+            try { return Enum.valueOf((Class<? extends Enum>) slotClass.asSubclass(Enum.class), name); } catch (Throwable ignored) {}
+            Object[] constants = slotClass.getEnumConstants();
+            if (constants != null) {
+                for (Object constant : constants) {
+                    if (String.valueOf(constant).equalsIgnoreCase(name)) return constant;
+                }
+            }
+            for (String fieldName : new String[]{name, "MAINHAND", "a", "HAND"}) {
                 try {
                     Field field = slotClass.getDeclaredField(fieldName);
                     field.setAccessible(true);
@@ -3286,6 +3508,52 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
         } catch (Throwable ignored) {
         }
         return null;
+    }
+
+    /** Broadcasts all six equipment slots to real viewers so armor/offhand appears on the fake. */
+    private void broadcastAllEquipment(Player fake) {
+        try {
+            if (fake == null) return;
+            Object nmsPlayer = invokeFirst(fake, new String[]{"getHandle"}, new Class[]{}, new Object[]{});
+            int entityId = 0;
+            try { entityId = ((Number) invokeFlexible(fake, "getEntityId")).intValue(); } catch (Throwable ignored) {}
+            if (entityId == 0 && nmsPlayer != null) {
+                try { entityId = ((Number) invokeFlexible(nmsPlayer, "getId")).intValue(); } catch (Throwable ignored) {}
+            }
+            if (entityId == 0) return;
+            PlayerInventory inv = fake.getInventory();
+            List<Object> pairs = new ArrayList<Object>();
+            addEquipPair(pairs, "MAINHAND", inv.getItemInMainHand());
+            addEquipPair(pairs, "OFFHAND", inv.getItemInOffHand());
+            addEquipPair(pairs, "HEAD", inv.getHelmet());
+            addEquipPair(pairs, "CHEST", inv.getChestplate());
+            addEquipPair(pairs, "LEGS", inv.getLeggings());
+            addEquipPair(pairs, "FEET", inv.getBoots());
+            if (pairs.isEmpty()) return;
+            Object packet = constructEquipmentPacket(entityId, pairs);
+            if (packet == null) return;
+            for (Player viewer : onlinePlayers()) {
+                if (isLikelyFakeOnlinePlayer(viewer)) continue;
+                sendPacket(viewer, packet);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void addEquipPair(List<Object> pairs, String slotName, ItemStack bukkitItem) {
+        try {
+            Object slot = equipmentSlotByName(slotName);
+            if (slot == null) return;
+            Class<?> craftItem = Class.forName("org.bukkit.craftbukkit.inventory.CraftItemStack");
+            Class<?> itemStackClass = Class.forName("org.bukkit.inventory.ItemStack");
+            ItemStack send = bukkitItem == null ? new ItemStack(Material.AIR) : bukkitItem;
+            Object nmsItem = craftItem.getMethod("asNMSCopy", itemStackClass).invoke(null, send);
+            if (nmsItem == null) return;
+            Class<?> pairClass = Class.forName("com.mojang.datafixers.util.Pair");
+            Object pair = pairClass.getMethod("of", Object.class, Object.class).invoke(null, slot, nmsItem);
+            pairs.add(pair);
+        } catch (Throwable ignored) {
+        }
     }
 
     private byte skinLayerMask() {
@@ -3447,20 +3715,22 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
             try { inv = fake.getInventory(); } catch (Throwable t) { return; }
             if (inv == null) return;
 
+            // Defense in depth: never drop a GUI placeholder even if one somehow
+            // ended up in the fake's inventory.
             List<ItemStack> drops = new ArrayList<ItemStack>();
             ItemStack[] storage;
             try { storage = inv.getStorageContents(); } catch (Throwable t) { storage = inv.getContents(); }
             if (storage != null) {
-                for (ItemStack item : storage) if (!isEmptyItem(item)) drops.add(item);
+                for (ItemStack item : storage) if (!isEmptyItem(item) && !isPlaceholder(item)) drops.add(item);
             }
             ItemStack[] armor = null;
             try { armor = inv.getArmorContents(); } catch (Throwable ignored) {}
             if (armor != null) {
-                for (ItemStack item : armor) if (!isEmptyItem(item)) drops.add(item);
+                for (ItemStack item : armor) if (!isEmptyItem(item) && !isPlaceholder(item)) drops.add(item);
             }
             ItemStack offhand = null;
             try { offhand = inv.getItemInOffHand(); } catch (Throwable ignored) {}
-            if (!isEmptyItem(offhand)) drops.add(offhand);
+            if (!isEmptyItem(offhand) && !isPlaceholder(offhand)) drops.add(offhand);
 
             // Clear first so the items only exist as ground drops (no duplication).
             try { inv.clear(); } catch (Throwable ignored) {}
@@ -3595,13 +3865,12 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
                 hardRemoveNmsPlayer(fake == null ? null : fake.nmsPlayer, entityLater);
             }
         };
-        // Several passes across a few ticks: the first runs after Paper finishes
-        // broadcasting the death, later passes catch any corpse Paper re-adds.
+        // Same tick first so the fake leaves immediately instead of lingering as a
+        // dead body; later passes catch anything Paper re-adds.
+        try { cleanup.run(); } catch (Throwable ignored) {}
         runLater(cleanup, 1L);
-        runLater(cleanup, 2L);
-        runLater(cleanup, 10L);
-        runLater(cleanup, 40L);
-        runLater(cleanup, 60L);
+        runLater(cleanup, 5L);
+        runLater(cleanup, 20L);
     }
 
     private void clearDeathDrops(EntityDeathEvent event) {
@@ -4115,6 +4384,25 @@ public final class Rug extends JavaPlugin implements CommandExecutor, TabComplet
 
     private static String shortId(UUID uuid) {
         return uuid == null ? "none" : uuid.toString().substring(0, 8);
+    }
+
+    /**
+     * Holder that marks an inventory as a Rug fake-player editor and remembers
+     * which fake it edits. Using a holder (instead of title matching) makes the
+     * editor unambiguous and lets us write back only the real, mapped slots.
+     */
+    private static final class RugInvHolder implements InventoryHolder {
+        final String fakeName;
+        Inventory inventory;
+
+        RugInvHolder(String fakeName) {
+            this.fakeName = fakeName;
+        }
+
+        @Override
+        public Inventory getInventory() {
+            return inventory;
+        }
     }
 
     private static final class SoundOption {

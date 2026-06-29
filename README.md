@@ -4,7 +4,7 @@ A no-dependency Paper plugin that spawns Carpet-style **fake players** using ref
 NMS/`ServerPlayer` access, plus a small set of Carpet-inspired rules. Everything lives under
 a single `/rug` command hub and an in-game chest GUI.
 
-- **Version:** `v0.2.12-nms-alpha13`
+- **Version:** `v0.2.13-nms-alpha14`
 - **Target:** Paper `26.1.x` (built/tested on `26.1.2`), Java `25+`
 - **Runtime dependencies:** none. The Paper API is only a `provided` Maven dependency.
 - **No** CommandAPI, ProtocolLib, Citizens, or packet libraries are used.
@@ -36,14 +36,14 @@ CI builds the same way on GitHub Actions (`.github/workflows/build.yml`) using T
 
 Releases are automated by `.github/workflows/release.yml`:
 
-1. Push a version tag like `v0.2.12-nms-alpha13` (tags matching `v*`).
+1. Push a version tag like `v0.2.13-nms-alpha14` (tags matching `v*`).
 2. GitHub Actions builds the plugin and attaches the jar (named `Rug-<tag>.jar`,
-   e.g. `Rug-v0.2.12-nms-alpha13.jar`) to a GitHub Release for that tag automatically.
+   e.g. `Rug-v0.2.13-nms-alpha14.jar`) to a GitHub Release for that tag automatically.
 3. Tags containing `alpha`, `beta`, or `rc` are published as **prereleases**; any other `v*` tag is a full release.
 
 ```bash
-git tag v0.2.12-nms-alpha13
-git push origin v0.2.12-nms-alpha13
+git tag v0.2.13-nms-alpha14
+git push origin v0.2.13-nms-alpha14
 ```
 
 The workflow uses the built-in `GITHUB_TOKEN` and the official `gh release create`, so no third-party
@@ -120,11 +120,16 @@ the truncated name it actually spawned, and commands/tab-completion resolve that
 - **Help / About** – version and command help
 
 The inventory editor shows the fake player's **main inventory, hotbar, armor, and
-off-hand** with labelled empty slots. Edits are written back to the fake on close
-(or via the Back button) without duplicating items, and it is guarded so it never
-acts on a dead/removed fake. GUI navigation is silent and GUI buttons hide vanilla
-item stats (no stray "attack damage" tooltips). All chat commands still work, so
-technical users can skip the GUI entirely.
+off-hand** with labelled empty slots. It runs on a dedicated inventory holder and
+writes back **only the real mapped slots**, so GUI buttons/labels can never leak
+into the fake's inventory or drops. Armor slots only accept the right armor type
+(helmet/chestplate/leggings/boots) and the off-hand accepts any item; invalid
+items are rejected without being deleted or duplicated. Every click path
+(shift-click, number-key swap, drag, double-click) is handled, edits are written
+back on close/Back without duplication, armor is broadcast so it appears on the
+fake, and it is guarded so it never acts on a dead/removed fake. GUI navigation is
+silent and GUI buttons hide vanilla item stats (no stray "attack damage"
+tooltips). All chat commands still work, so technical users can skip the GUI entirely.
 
 ## Rules
 
@@ -158,15 +163,15 @@ A single-file plugin today; the package split into `command/`, `fakeplayer/`,
 `nms/`, `gui/`, `rules/`, `skin/`, and `util/` is planned for the next refactor.
 
 ```text
-src/main/java/com/dawsoncodes/rug/Rug.java   ~4,230 lines
+src/main/java/com/dawsoncodes/rug/Rug.java   ~4,300 lines
 src/main/resources/plugin.yml
 src/main/resources/config.yml
 ```
 
 Approximate Java LOC:
 
-- `Rug.java`: ~4,230
-- Total Java LOC: ~4,230
+- `Rug.java`: ~4,300
+- Total Java LOC: ~4,300
 
 Refresh the count any time with:
 
