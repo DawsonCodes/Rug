@@ -5,7 +5,7 @@
 
     <groupId>com.dawsoncodes</groupId>
     <artifactId>rug</artifactId>
-    <version>0.2.11-nms-alpha12</version>
+    <version>0.2.12-nms-alpha13</version>
     <packaging>jar</packaging>
 
     <name>Rug</name>
